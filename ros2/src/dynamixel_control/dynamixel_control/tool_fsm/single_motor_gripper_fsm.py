@@ -29,6 +29,8 @@ class SingleMotorGripperFSM(ToolFSM):
             return self.stop()
         if command == 'DISABLE':
             return self.disable()
+        if command == 'HOLD':
+            return self.hold()
         if command not in ('OPEN', 'CLOSE'):
             raise ToolCommandError(f'unsupported single-motor command {command}')
         if self.state == ToolState.CALIBRATION_REQUIRED:
@@ -45,6 +47,27 @@ class SingleMotorGripperFSM(ToolFSM):
         except Exception as exc:
             return self._fault(exc)
         self.state = ToolState.OPEN if command == 'OPEN' else ToolState.CLOSED
+        return self.state
+
+    def hold(self):
+        if self.state not in (ToolState.READY, ToolState.OPEN,
+                              ToolState.CLOSED, ToolState.OPENING,
+                              ToolState.CLOSING):
+            raise ToolCommandError(f'HOLD unavailable in {self.state.name}')
+        if self.bridge.read_hardware_error(5) != 0:
+            raise ToolCommandError('ID5 hardware error')
+        if self.bridge.read_torque(5) != 1:
+            raise ToolCommandError('actual ID5 Torque Enable is OFF')
+        current = self.bridge.read_position(5)
+        if current is None:
+            raise ToolCommandError('ID5 position unavailable')
+        try:
+            self.bridge.goal_position(5, int(current))
+        except Exception as exc:
+            # A failed hold write must not leave an old moving goal active.
+            self.stop()
+            raise ToolCommandError(f'HOLD failed: {exc}') from exc
+        self.state = ToolState.READY
         return self.state
 
     def stop(self):

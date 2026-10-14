@@ -71,3 +71,23 @@ def test_rejects_bad_range_and_communication_fault():
 def test_id3_id4_are_not_valid_single_motor_targets():
     fsm = create_tool_fsm('spur_1motor_gripper', profile(actuator_ids=[3, 4]), MockBridge())
     assert fsm.startup() == ToolState.FAULT
+
+
+def test_hold_parks_current_id5_position_without_torque_off():
+    bridge = MockBridge(position=2005, torque=1)
+    fsm = create_tool_fsm('spur_1motor_gripper', profile(), bridge)
+    fsm.startup()
+    assert fsm.command('OPEN') == ToolState.OPEN
+    assert fsm.command('HOLD') == ToolState.READY
+    assert bridge.writes[-1] == ('goal', 5, 2005)
+    assert not any(write[0] == 'torque' for write in bridge.writes)
+    assert fsm.command('CLOSE') == ToolState.CLOSED
+
+
+def test_hold_rejects_torque_off_without_goal_write():
+    bridge = MockBridge(torque=0)
+    fsm = create_tool_fsm('spur_1motor_gripper', profile(), bridge)
+    fsm.startup()
+    with pytest.raises(ToolCommandError, match='Torque Enable is OFF'):
+        fsm.command('HOLD')
+    assert bridge.writes == []
