@@ -67,8 +67,9 @@ def test_ball_lock_has_separate_wrist_and_lock_joints():
     assert wrist.find('child').get('link') == 'arm_link5'
     assert lock.find('parent').get('link') == 'arm_link5'
     assert lock.find('child').get('link') == 'toolchanger_lock_rotor'
-    assert float(lock.find('limit').get('lower')) == 0.0
-    assert float(lock.find('limit').get('upper')) == 0.392699
+    assert lock.get('type') == 'continuous'
+    assert lock.find('limit').get('lower') is None
+    assert lock.find('limit').get('upper') is None
     for index in range(1, 9):
         ball = root.find(f"joint[@name='lock_ball_{index}']")
         assert ball.get('type') == 'prismatic'

@@ -1,5 +1,6 @@
 <?xml version="1.0"?>
-<!-- 2026-10-14: new_robot_arm_description.zip의 CAD 좌표, 축, 관절 범위를 그대로 사용.
+<!-- 2026-10-14: new_robot_arm_description.zip의 CAD 좌표와 축을 그대로 사용.
+     잠금 로터만 사용자 확인에 따라 양방향 반복 인덱싱 continuous 관절로 변경.
      팔/그리퍼 관절 이름과 메쉬 패키지 경로만 기존 ROS 인터페이스에 맞춤.
      link_043/link_051은 arm_link5 원점의 호환 프레임이며 기존 TCP 캘리브레이션이 아님.
      잠금 로터와 볼 이동의 연동식 및 손목 카메라 위치는 원본에 없어 추정하지 않음. -->
@@ -526,12 +527,12 @@
     <axis xyz="1 0 0" />
     <limit lower="-3.14159" upper="3.14159" effort="10" velocity="2.0" />
   </joint>
-  <joint name="toolchanger_lock_wheel" type="revolute">
+  <joint name="toolchanger_lock_wheel" type="continuous">
     <parent link="arm_link5" />
     <child link="toolchanger_lock_rotor" />
     <origin xyz="0.0610526 1.12795e-15 -2.64069e-06" rpy="0 0 0" />
     <axis xyz="1 0 0" />
-    <limit lower="0" upper="0.392699" effort="10" velocity="2.0" />
+    <limit effort="10" velocity="2.0" />
   </joint>
   <joint name="lock_ball_1" type="prismatic">
     <parent link="arm_link5" />
