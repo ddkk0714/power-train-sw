@@ -50,3 +50,35 @@ FULL_ROBOT에서는 상태 관측/도구 게이트가 동작하며 잠금 변경
 
 이번 구현은 제어코어와 ROS/하드웨어 어댑터 및 가상 검증이다.
 GUI 잠금 버튼, 자동 도구교체 시퀀스와 물리 결합·탈착·하중 시험은 인수하지 않는다.
+
+## 자동 교체 시퀀스 (2026-10-15 추가)
+
+레퍼런스 [OSrobotToolChanger](https://github.com/isenklopr/OSrobotToolChanger)의
+`changeStatus()` 흐름을 단계별 상태로 분리해 `toolchanger_sequence.py`에 올렸다.
+레퍼런스는 아두이노에서 서보 각도2개와 근접센서로 장착을 직접 확인하지만,
+이 기구에는 결합 센서가 없으므로 다음과 같이 대응시켰다.
+
+| 레퍼런스 | 이 저장소 |
+|---|---|
+| `changeServo(lock/noLock)` 서보 각도2개 | 영점 기준 ±256tick 인덱스 이동 |
+| 근접센서 10회 평균 장착 확인 | ID1 Present Load(126) 스트로크 최대값 **프록시** |
+| `sendRoboSig(true)` confirm 릴레이 | `/toolchanger/confirm` 1회 발행 |
+| `checkTime()` 10초 주기 감시 → 비상정지 | **미구현(2026-10-15 사용자 결정)** |
+
+시퀀스 상태는 IDLE → TOOL_STOP → MOVING → CONFIRMED이고,
+이미 원하는 상태면 이동 없이 UNCHANGED로 끝낸다. 실패는 모두 ABORTED다.
+
+- `CHANGE` 명령: `{"command":"CHANGE","to":"LOCKED"|"UNLOCKED","direction":1|-1}`.
+  기존 `LOCK`/`UNLOCK` 원시 명령은 그대로 유지한다.
+- 이동을 걸기 전의 거부(도구 토크OFF 미확인, 도구 이동 중, 범위/권한)는
+  ID1에 아무 쓰기도 하지 않고 잠금 상태를 유지한다.
+- 이동이 시작된 뒤의 실패(피드백 오류, timeout, 목표와 다른 인덱스 정착,
+  결합 프록시 미달)는 ID1 토크를 끄고 confirm을 발행하지 않는다.
+- `toolchanger_coupling_load_threshold`가 0 이하면 프록시를 끈다(기본값).
+  **실측 전에는 기본값을 쓰지 않는다.** 임계값은 실기에서 측정해 지정한다.
+- 결합 프록시는 LOCK 방향만 통과/실패를 가른다. 분리는 자유 회전으로도 끝날 수 있어
+  부하로 게이트하지 않고 RELEASED로 보고만 한다.
+- 프록시는 결합 센서 확인을 대신하지 않으므로 `mechanically_confirmed`는 계속 false다.
+- ⚠️ 주기 감시가 없으므로 **잠금 이동 순간에만 결합을 추정하며, 그 뒤 정지 상태에서
+  도구가 빠지는 것은 감지하지 못한다.** 레퍼런스가 `checkTime()`으로 막던 시나리오다.
+- `toolchanger_mock_load`는 mock에서만 쓰는 부하 주입값이며 게이트 자체의 음성 대조용이다.

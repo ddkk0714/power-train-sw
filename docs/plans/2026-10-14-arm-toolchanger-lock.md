@@ -11,3 +11,11 @@
 모터에 접속하지 않는 mock 환경의 installed ros2 run 엔트리포인트에서
 SET_ZERO/ENABLE/UNLOCK(-1)/LOCK(+1)/tool torque 게이트/비상정지 및
 read_only 재시작을 확인한다. 실기 연결/구동/NVM 작업은 수행하지 않는다.
+
+## 자동 교체 시퀀스 (2026-10-15)
+
+5. 시퀀스 코어(도구정지 → 이동 → 도달검증 → 프록시 평가 → confirm) →
+   verify: 중단 경로별 단위테스트(토크OFF 쓰기와 confirm 미발행 단언).
+6. 브리지 `CHANGE` 명령과 `/toolchanger/confirm` → verify: 설치된 ros2 run mock E2E에
+   음성 대조(임계값 미달 → ABORTED) 포함.
+7. GUI 잠금 버튼 → **미착수(다음 작업)**.
