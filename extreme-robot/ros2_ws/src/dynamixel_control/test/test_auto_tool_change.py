@@ -32,7 +32,7 @@ def setup_sequence():
         docks['slots'][slot]['poses'][pose]['tolerance_rad'] = 0.001
     positions = dict.fromkeys(docks['joint_names'], 0.0)
     core.observe(positions, dict.fromkeys(positions, 0.0))
-    core.start(docks, '1', '2', 'spur_1motor_gripper', feedback_timeout_s=0.5,
+    core.start(docks, '1', '2', 'dual_motor_gripper', feedback_timeout_s=0.5,
                home_timeout_s=2.0, home_tolerance_rad=0.005,
                unlock_direction=-1, lock_direction=1)
     return core, lock, io, clock, allowed, moves, holds, verifies

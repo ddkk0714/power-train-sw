@@ -55,7 +55,7 @@ def main():
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=0.05)
         if core.feedback and not started:
-            core.start(dock_fixture(), '1', '2', 'spur_1motor_gripper',
+            core.start(dock_fixture(), '1', '2', 'dual_motor_gripper',
                        feedback_timeout_s=0.5, home_timeout_s=2.0,
                        home_tolerance_rad=0.01, unlock_direction=-1, lock_direction=1)
             started = True

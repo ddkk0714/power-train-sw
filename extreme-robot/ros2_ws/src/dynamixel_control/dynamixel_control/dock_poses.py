@@ -27,11 +27,15 @@ def validate_docks(data, joint_names, complete=True):
     slots = data.get('slots')
     if not isinstance(slots, dict) or (complete and len(slots) < 3):
         raise ValueError('at least three complete dock slots are required')
+    if 'exchange' in data:
+        validate_exchange(data['exchange'])
+    tools = []
     for slot_id, slot in slots.items():
         if not isinstance(slot_id, str) or not slot_id or not isinstance(slot, dict):
             raise ValueError('invalid dock slot')
         if slot.get('tool_type') not in SUPPORTED_TOOL_TYPES:
             raise ValueError('unknown dock tool type')
+        tools.append(slot['tool_type'])
         poses = slot.get('poses', {})
         if (not isinstance(poses, dict) or not set(poses).issubset(POSE_NAMES)
                 or (complete and set(poses) != set(POSE_NAMES))):
@@ -48,6 +52,8 @@ def validate_docks(data, joint_names, complete=True):
             positive(pose.get('tolerance_rad'), 'pose tolerance')
             positive(pose.get('timeout_s'), 'pose timeout')
             positive(pose.get('captured_at'), 'capture timestamp')
+    if len(tools) != len(set(tools)):
+        raise ValueError('each tool type must have one fixed dock slot')
     return data
 
 
@@ -102,7 +108,17 @@ class DockPoseStore:
         self._save(data)
         self.data = data
 
+    def configure_exchange(self, settings):
+        from copy import deepcopy
+        data = deepcopy(self.data)
+        data['exchange'] = deepcopy(validate_exchange(settings))
+        validate_docks(data, self.joint_names, complete=False)
+        self._save(data)
+        self.data = data
+
     def _save(self, data):
+        if not self.filename:
+            raise ValueError('explicit dock filename is required')
         import os
         import tempfile
         path = Path(self.filename)
@@ -118,3 +134,28 @@ class DockPoseStore:
         finally:
             if temporary and os.path.exists(temporary):
                 os.unlink(temporary)
+
+
+def validate_exchange(settings):
+    if not isinstance(settings, dict):
+        raise ValueError('measured exchange settings are required')
+    for key in ('feedback_timeout_s', 'home_timeout_s', 'home_tolerance_rad'):
+        positive(settings.get(key), key)
+    for key in ('unlock_direction', 'lock_direction'):
+        if type(settings.get(key)) is not int or settings[key] not in (-1, 1):
+            raise ValueError(f'{key} must be +1 or -1')
+    return settings
+
+
+def tool_slots(data, current_tool, desired_tool):
+    """현재 도구의 빈 고정 자리와 요청 도구 자리를 이름으로 고른다."""
+    mapping = {slot['tool_type']: slot_id for slot_id, slot in data['slots'].items()}
+    if len(mapping) != len(data['slots']):
+        raise ValueError('ambiguous tool dock mapping')
+    if current_tool is None:
+        raise ValueError('attached tool is unknown; manual recovery is required')
+    if current_tool == desired_tool:
+        raise ValueError('requested tool is already attached')
+    if current_tool not in mapping or desired_tool not in mapping:
+        raise ValueError('current and desired tools must have taught fixed slots')
+    return mapping[current_tool], mapping[desired_tool]

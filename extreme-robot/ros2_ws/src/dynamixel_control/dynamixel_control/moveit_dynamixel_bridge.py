@@ -740,8 +740,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                     if self._enable_torque(config["id"], joint_name):
                         self.group_sync_read.addParam(config["id"])
                         self.active_ids.add(config["id"])
-            if (self.cleaning_configured
-                    and self.control_scope != 'END_EFFECTOR_ONLY'):
+            if self.cleaning_configured and self.control_scope == 'FULL_ROBOT':
                 self._configure_cleaning_actuator()
 
         self.tool_discovered = self.mock_mode
@@ -1141,7 +1140,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         자동으로 토크를 켜지는 **않는다**. 사람이 팔을 만지려고 일부러 푼 것일 수
         있고, 그때 명령 하나에 팔이 다시 잠기면 손을 다친다.
         """
-        off = sorted(self.active_ids - self.torque_enabled_ids)
+        commanded_ids = (self.active_ids.intersection(ARM_IDS)
+                         if self.control_scope == 'TOOL_CHANGE' else self.active_ids)
+        off = sorted(commanded_ids - self.torque_enabled_ids)
         if not off:
             return
         self.get_logger().error(
@@ -2390,7 +2391,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                 expected_models = profile.get('endpoint_calibration_models') or {}
                 expected_model = expected_models.get(
                     dxl_id, expected_models.get(str(dxl_id), profile.get('motor_model')))
-                if (self.control_scope == 'END_EFFECTOR_ONLY'
+                if (self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE')
                         and expected_model is not None and int(model) != int(expected_model)):
                     raise ToolProfileError(f'{requested} ID{dxl_id} model mismatch')
                 hw_error = self._read_register(
@@ -2406,7 +2407,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                     dxl_id, required_modes.get(str(dxl_id)))
                 if (required_mode is not None and mode != int(required_mode)
                         and not (configure and not self.read_only
-                                 and self.control_scope == 'END_EFFECTOR_ONLY')):
+                                 and self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'))):
                     raise ToolProfileError(
                         f'{requested} ID {dxl_id} operating mode {mode} '
                         f'!= required {int(required_mode)}')
@@ -2415,7 +2416,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                     self._read_register(
                         dxl_id, ADDR_PRESENT_POSITION, 4,
                         f'{requested} present position'),
-                    profile=profile if self.control_scope == 'END_EFFECTOR_ONLY' else None)
+                    profile=profile if self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE') else None)
                 sample = {
                     'id': dxl_id,
                     'joint': (profile.get('joint_names') or [''])[0],
@@ -2927,11 +2928,12 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         was_ready = bool(self.toolchanger.state == 'LOCKED' and self.toolchanger.sample
                          and self.toolchanger.sample['torque'] == 1)
         self.toolchanger.observe()
-        self.lock_sequence.poll()
-        confirm = self.lock_sequence.take_confirm()
-        if confirm is not None:
-            # 레퍼런스의 confirm 릴레이에 대응한다. 실패 경로에서는 발행하지 않는다.
-            self.toolchanger_confirm_pub.publish(String(data=json.dumps(confirm)))
+        if not getattr(self, '_auto_mode', False):
+            self.lock_sequence.poll()
+            confirm = self.lock_sequence.take_confirm()
+            if confirm is not None:
+                # 자동 교체의 중간 confirm은 전체 복귀 완료까지 코어 안에 보관한다.
+                self.toolchanger_confirm_pub.publish(String(data=json.dumps(confirm)))
         if was_ready and not self.toolchanger.ready:
             self._stop_tool('coupling lock feedback lost')
         snapshot = self._toolchanger_snapshot()
@@ -2962,6 +2964,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             else:
                 if self.control_scope == 'TOOL_CHANGE':
                     self._change_require()
+                    if self._auto_mode:
+                        raise LockError('automatic sequence owns the coupling lock')
                     if command not in ('ENABLE', 'LOCK', 'UNLOCK', 'CHANGE'):
                         raise LockError('TOOL_CHANGE permits only prepared lock motion')
                 elif (self.read_only or self.emergency_stop_active
@@ -3058,11 +3062,11 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                 self._publish_tool_status_safely()
 
     def _switch_tool_runtime(self, requested):
-        if self.control_scope != 'END_EFFECTOR_ONLY':
+        if self.control_scope not in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'):
             return self._switch_tool_runtime_impl(requested)
-        # Context replacement is serialized by _tool_change_lock.  Do not
-        # hold _bus_lock across profile/FSM/session work: those helpers take
-        # it themselves for their individual read/write transactions.
+        # EEO context replacement uses short individual bus transactions.
+        # TOOL_CHANGE callers additionally serialize profile retirement with
+        # arm feedback so the SDK never reads a half-replaced ID list.
         generation = self._tool_context_generation
         self._runtime_switching = True
         self._tool_preparation_state = 'PREPARING'
@@ -3112,7 +3116,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         if requested not in supported:
             raise ToolProfileError(
                 f'runtime switching supports only {supported}, got {requested!r}')
-        if requested == self.tool_type and self.control_scope != 'END_EFFECTOR_ONLY':
+        if (requested == self.tool_type
+                and self.control_scope not in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE')):
             self._revalidate_current_tool()
             return
         if self.emergency_stop_active or self.tool_detached:
@@ -3129,7 +3134,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             profiles, ParameterToolIdentityProvider(requested),
             mock_mode=self.mock_mode)
         selection = manager.refresh('IDLE')
-        if self.control_scope == 'END_EFFECTOR_ONLY' and not selection.valid:
+        if self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE') and not selection.valid:
             raise ToolProfileError(selection.reason)
         new_ids = [int(item) for item in selection.profile.get('actuator_ids', [])]
         if getattr(self, 'toolchanger', None) and 1 in new_ids:
@@ -3145,6 +3150,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             if new_ids[0] in ARM_IDS:
                 raise ToolProfileError('cleaner actuator conflicts with an arm joint')
 
+        if self.control_scope == 'TOOL_CHANGE':
+            self._auto_candidate_ids = set(new_ids)
+
         # A manual GUI request is authoritative: validate exactly the selected
         # profile's IDs, but do not ask the automatic identity provider to
         # choose a different tool.  In the END_EFFECTOR_ONLY bench workflow
@@ -3154,12 +3162,12 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         if not self.mock_mode and self.port_connected:
             verified_samples = self._verify_requested_tool_profile(
                 requested, selection.profile,
-                configure=self.control_scope == 'END_EFFECTOR_ONLY')
+                configure=self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'))
 
         # Stop and unregister the old tool before changing the allowlist.
         old_ids = list(self.tool_ids)
         self._release_current_tool_for_switch(requested)
-        if self.control_scope == 'END_EFFECTOR_ONLY':
+        if self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'):
             self._tool_context_generation += 1
             self._clear_runtime_sessions()
             self.tool_fsm = None
@@ -3270,14 +3278,16 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             self.dual_calibration_session = DualCalibrationSession(
                 self, self.tool_profile)
 
-        if self.control_scope == 'END_EFFECTOR_ONLY':
+        if self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'):
             self._physical_tool_detached = False
             state = getattr(getattr(self.tool_fsm, 'state', None), 'name', None)
             if state != 'READY':
                 raise RuntimeError(
                     f'{type(self.tool_fsm).__name__} startup returned {state}, '
                     'expected READY')
-            reason = self._tool_enable_block_reason()
+            reason = (self._change_preparation_reason()
+                      if self.control_scope == 'TOOL_CHANGE'
+                      else self._tool_enable_block_reason())
             if reason:
                 raise RuntimeError(f'tool preparation failed: {reason}')
             torque_state = self._current_tool_torque_state()
@@ -4638,7 +4648,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             self._tool_samples[dxl_id] = sample
 
     def publish_joint_states(self):
-        if self.control_scope == 'END_EFFECTOR_ONLY':
+        if self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'):
             with self._bus_lock:
                 return self._publish_joint_states_impl()
         return self._publish_joint_states_impl()
@@ -4653,6 +4663,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                 msg.name = list(self._mock_arm_positions)
                 msg.position = list(self._mock_arm_positions.values())
                 msg.effort = [0.0] * len(msg.name)
+                msg.velocity = [0.0] * len(msg.name)
             for joint in self.tool_profile.get('joint_names', []):
                 sample = next(iter(self._tool_samples.values()), {})
                 tool_msg.name.append(joint)
@@ -4698,20 +4709,26 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
 
         # 팔 관절: position(rad) + address-126 feedback(raw signed).
         # 주소 126의 의미는 실제 장착 모터 control table로 확인해야 한다.
+        arm_fault = False
         for joint_name, config in JOINT_CONFIG.items():
             dxl_id = config["id"]
             if dxl_id not in self.active_ids:
                 continue
             sample = self._read_sample(dxl_id)
             if sample is None:
-                fault = True
+                fault = arm_fault = True
                 continue
             feedback_raw, tick, hw_error = sample
             if hw_error != 0:
-                fault = True
+                fault = arm_fault = True
             msg.name.append(joint_name)
             msg.position.append(self.tick_to_rad(joint_name, tick))
             msg.effort.append(float(feedback_raw))
+            velocity = to_signed(self.group_sync_read.getData(dxl_id, 128, 4), 4)
+            msg.velocity.append(velocity * VELOCITY_LSB_TO_RAD_S
+                                * config['direction'] / self._joint_gear_ratio(joint_name))
+        if self.control_scope == 'TOOL_CHANGE':
+            self._change_arm_fault = arm_fault
 
         if (self.tool_type == 'cleaner' and self.cleaning_configured
                 and self.cleaning_actuator_id in self.active_ids):

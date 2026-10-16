@@ -11,13 +11,17 @@ class AutoToolChange:
     """새 관절 피드백으로 도달·정지를 확인한 다음에만 다음 단계를 발행한다."""
 
     def __init__(self, lock_sequence, move, hold, permission,
-                 after_unlock=lambda: None, verify_tool=lambda: None, clock=time.monotonic):
+                 after_unlock=lambda: None, verify_tool=lambda: None, before_lock=lambda: None,
+                 before_unlock=lambda: None,
+                 clock=time.monotonic):
         self.lock_sequence = lock_sequence
         self.move = move
         self.hold = hold
         self.permission = permission
         self.after_unlock = after_unlock
         self.verify_tool = verify_tool
+        self.before_lock = before_lock
+        self.before_unlock = before_unlock
         self.clock = clock
         self.state = 'IDLE'
         self.error = ''
@@ -154,6 +158,12 @@ class AutoToolChange:
             self.target = seat
             if not self._arrived(require_new=False):
                 raise RuntimeError('seat target lost before lock command')
+            if self.state == 'UNLOCK':
+                self.before_unlock()
+            if self.state == 'LOCK':
+                self.before_lock()
+                self.permission()
+                self._check_feedback()
             desired = 'UNLOCKED' if self.state == 'UNLOCK' else 'LOCKED'
             self.lock_sequence.start(desired, self.directions[self.state])
             self._lock_started = True

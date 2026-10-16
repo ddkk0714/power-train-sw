@@ -14,7 +14,7 @@ def test_atomic_capture_roundtrip_and_partial_reload(tmp_path):
     samples = {name: dict(position=0.0, torque=0, velocity=0) for name in names}
     for slot in ('1', '2', '3'):
         for pose in ('approach', 'seat', 'retreat'):
-            store.capture(slot, pose, 'spur_1motor_gripper', samples, 0.01, 2.0, 100)
+            store.capture(slot, pose, dock_fixture()['slots'][slot]['tool_type'], samples, 0.01, 2.0, 100)
             restored = DockPoseStore(str(path), names)
             assert restored.load() == store.data
     assert store.calibrated and restored.calibrated
@@ -79,3 +79,43 @@ def test_failed_atomic_save_preserves_prior_table(tmp_path, monkeypatch):
         store.capture('1', 'seat', 'spur_1motor_gripper', samples, 0.01, 2.0, 100)
     assert path.read_bytes() == before
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_tool_names_resolve_to_their_fixed_slots():
+    from dynamixel_control.dock_poses import tool_slots
+    data = dock_fixture()
+    assert tool_slots(data, 'spur_1motor_gripper', 'dual_motor_gripper') == ('1', '2')
+    assert tool_slots(data, 'dual_motor_gripper', 'cleaner') == ('2', '3')
+
+
+@pytest.mark.parametrize('current,desired', [(None, 'cleaner'), ('cleaner', 'cleaner'),
+                                             ('missing', 'cleaner'), ('cleaner', 'missing')])
+def test_unresolved_or_same_tool_is_rejected(current, desired):
+    from dynamixel_control.dock_poses import tool_slots
+    with pytest.raises(ValueError):
+        tool_slots(dock_fixture(), current, desired)
+
+
+def test_duplicate_fixed_tool_slots_are_rejected():
+    from dynamixel_control.dock_poses import validate_docks
+    data = dock_fixture()
+    data['slots']['2']['tool_type'] = data['slots']['1']['tool_type']
+    with pytest.raises(ValueError, match='one fixed dock'):
+        validate_docks(data, data['joint_names'])
+
+
+def test_measured_exchange_settings_roundtrip_and_no_defaults(tmp_path):
+    from dynamixel_control.dock_poses import validate_exchange
+    path = tmp_path / 'docks.json'
+    store = DockPoseStore(str(path), dock_fixture()['joint_names'])
+    with pytest.raises(ValueError):
+        validate_exchange(None)
+    settings = dock_fixture()['exchange']
+    store.configure_exchange(settings)
+    restored = DockPoseStore(str(path), store.joint_names)
+    restored.load()
+    assert restored.data['exchange'] == settings
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        store.configure_exchange(dict(settings, feedback_timeout_s=0))
+    assert path.read_bytes() == before
