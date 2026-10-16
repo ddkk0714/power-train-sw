@@ -144,6 +144,16 @@
 
 ---
 
+### 4-6. 교체 전용 입력 (2026-10-16 추가 사용자 결정)
+
+교체용 입력 `/toolchanger/arm_trajectory`를 따로 둔다. `TOOL_CHANGE`에서는
+기존 `/arm_controller/joint_trajectory`와 FollowJointTrajectory 액션, 수동·진단 팔 입력을
+거부한다. 두 입력은 안전 권한을 별도로 검사하고 같은 모터 쓰기 함수를 공유한다.
+토픽 분리는 발행자 인증을 의미하지 않는다. 교체 세션의 무장·차체 정지·비상정지 검사는
+전용 입력에도 적용한다. 기존 FULL_ROBOT/END_EFFECTOR_ONLY 입력은 유지한다.
+
+---
+
 ## 5. 구현 단계
 
 각 단계는 **검증 기준을 통과해야** 다음으로 간다. 단계별로 커밋한다.
