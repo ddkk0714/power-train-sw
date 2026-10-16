@@ -154,7 +154,15 @@ class ArmUiTelemetryBinding:
                 block_reasons.append(C.BlockReason(
                     code="tool_not_ready", korean=f"도구 준비 안 됨 — {detail}",
                 ))
+        lock_age = self._age(snapshot, runtime.get("coupling_lock_age_s"))
+        lock = (runtime.get("coupling_lock") or {}
+                if lock_age is not None and lock_age <= 1.0 else {})
+        if (link_state == C.LINK_LIVE and ops_link_ready and lock.get("enabled") is True
+                and tool is not None and tool.get("control_scope") == "END_EFFECTOR_ONLY"
+                and tool.get("read_only") is False and tool.get("emergency_stop") is False):
+            capabilities.add(C.CAP_COUPLING_LOCK)
         return C.ArmUiState(
+            coupling_lock=lock,
             link=C.SourceLink(state=link_state, age_s=receive_age),
             detected_tool=identity,
             arm_fsm=runtime_state("fsm_state"),

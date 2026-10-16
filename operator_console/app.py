@@ -4255,6 +4255,7 @@ class OperatorConsole(Gtk.Window):
                 transport=ContractGatedTransport(
                     submit_fn=self._ops_panel.submit_external,
                     registered_actions=frozenset({
+                        "robot_arm_lock_command", "robot_arm_lock_stop",
                         ACTION_MODE_REQUEST, ACTION_TOOL_CHANGE,
                         ACTION_TOOL_COMMAND,
                         ACTION_TOOL_ENABLE,
@@ -5516,10 +5517,21 @@ class OperatorConsole(Gtk.Window):
             "main_video": self._main_video._name,
             "rover_l515_width": self._l515._rover_status_overlay.get_size_request()[0],
             "rover_d435_width": self._d435._rover_status_overlay.get_size_request()[0],
+            "arm_lock_state": arm_ui_state.coupling_lock.get("state"),
+            "arm_lock_motion_disabled": not any(
+                widget.get_sensitive() for key, widget
+                in self._arm_manual_tab.coupling_lock.buttons.items() if key != "stop"
+            ),
             "arm_ui_detected_tool": arm_ui_state.detected_tool.kind,
             "arm_ui_actions_disabled": not any(
                 widget.get_sensitive()
                 for widget in self._arm_manual_tab.gate.widgets
+                # Authority requests and read-only re-scan are recovery actions.
+                if widget not in (self._arm_manual_tab._manual_button,
+                                  self._arm_manual_tab._fsm_button,
+                                  self._arm_manual_tab._release_button,
+                                  self._arm_manual_tab._change_button,
+                                  self._arm_manual_tab._restart_button)
             ),
         })
         return True

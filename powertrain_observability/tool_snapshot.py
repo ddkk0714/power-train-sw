@@ -25,7 +25,7 @@ def normalize_tool(value):
         if item is not None and type(item) is not bool:
             raise ValueError('invalid tool flag')
         out[key] = item
-    for key in ('control_mode', 'fsm_state', 'reason'):
+    for key in ('control_mode', 'fsm_state', 'reason', 'control_scope'):
         item = value.get(key)
         if item is not None and (not isinstance(item, str) or len(item) > 160):
             raise ValueError('invalid tool status text')
@@ -78,7 +78,15 @@ def parse_runtime(value):
     if age is not None and (type(age) not in (int, float) or not math.isfinite(age) or age < 0):
         raise ValueError('invalid tool age')
     tool = value.get('tool')
-    return {'source_age_s': age, 'tool': None if tool is None else normalize_tool(tool)}
+    result = {'source_age_s': age, 'tool': None if tool is None else normalize_tool(tool)}
+    if 'coupling_lock' in value:
+        result['coupling_lock'] = normalize_lock(value['coupling_lock'])
+        lock_age = value.get('coupling_lock_age_s')
+        if lock_age is not None and (type(lock_age) not in (int, float)
+                or not math.isfinite(lock_age) or lock_age < 0):
+            raise ValueError('invalid lock age')
+        result['coupling_lock_age_s'] = lock_age
+    return result
 
 
 def parse_arm_runtime(value):
@@ -100,4 +108,51 @@ def parse_arm_runtime(value):
         if age is not None and (type(age) not in (int, float) or not math.isfinite(age) or age < 0):
             raise ValueError('invalid arm runtime age')
         result['source_age_s'][key] = age
+    return result
+
+
+def validate_lock_command(value):
+    """Only the existing manual lock vocabulary may cross the ops channel."""
+    if not isinstance(value, dict):
+        raise ValueError('invalid lock command')
+    command = value.get('command')
+    if not isinstance(command, str):
+        raise ValueError('invalid lock command')
+    keys = {'STOP': {'command'}, 'ENABLE': {'command'},
+            'SET_ZERO': {'command', 'state'},
+            'CHANGE': {'command', 'to', 'direction'}}.get(command)
+    if keys is None or set(value) != keys:
+        raise ValueError('invalid lock command fields')
+    if command == 'SET_ZERO' and value['state'] not in ('LOCKED', 'UNLOCKED'):
+        raise ValueError('invalid lock zero state')
+    if command == 'CHANGE' and (
+            value['to'] not in ('LOCKED', 'UNLOCKED')
+            or type(value['direction']) is not int or value['direction'] not in (-1, 1)):
+        raise ValueError('invalid lock transition')
+    return dict(value)
+
+
+def normalize_lock(value):
+    """Bound status independently from the tool, which may be detached."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError('invalid lock status')
+    result = {}
+    for key in ('enabled', 'mechanically_confirmed'):
+        item = value.get(key)
+        if item is not None and type(item) is not bool:
+            raise ValueError('invalid lock flag')
+        result[key] = item
+    for key in ('zero_tick', 'position', 'torque', 'coupling_peak_load'):
+        item = value.get(key)
+        if item is not None and (type(item) not in (int, float) or not math.isfinite(item)):
+            raise ValueError('invalid lock feedback')
+        result[key] = item
+    for key in ('state', 'zero_state', 'sequence_state', 'coupling_proxy',
+                'error', 'sequence_error', 'command_error'):
+        item = value.get(key)
+        if item is not None and (not isinstance(item, str) or len(item) > 160):
+            raise ValueError('invalid lock status text')
+        result[key] = item
     return result

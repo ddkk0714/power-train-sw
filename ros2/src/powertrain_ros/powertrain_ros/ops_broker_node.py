@@ -155,6 +155,7 @@ class OpsBrokerNode(Node):
         # The arm repository already owns these FSM ingress topics.  This node
         # only forwards a tiny validated vocabulary through the authenticated
         # ops channel; it never owns a motor or publishes a raw Dynamixel goal.
+        self._coupling_lock_pub = self.create_publisher(String, "/toolchanger/command", 10)
         self._arm_mode_pub = self.create_publisher(String, "/control/mode", 10)
         self._tool_fsm_pub = self.create_publisher(String, "/tool/fsm_command", 10)
         self._tool_change_pub = self.create_publisher(String, "/tool/change", 10)
@@ -508,6 +509,22 @@ class OpsBrokerNode(Node):
             return client
 
     def _execute(self, order, connection, role):
+        if order.kind in ("publish_lock_command", "publish_lock_stop"):
+            from powertrain_observability.tool_snapshot import validate_lock_command
+            try:
+                params = dict(order.params)
+                if order.kind == "publish_lock_stop":
+                    if params:
+                        raise ValueError("lock stop takes no params")
+                    params = {"command": "STOP"}
+                validate_lock_command(params)
+            except ValueError as exc:
+                self._complete_order(order, connection, role, False, str(exc))
+                return
+            self._coupling_lock_pub.publish(String(data=json.dumps(params)))
+            self._complete_order(order, connection, role, True,
+                                 "published lock request; verify lock status")
+            return
         if order.kind == "publish_arm_mode":
             mode = order.params.get("mode")
             if mode not in ("MANUAL", "FSM"):
