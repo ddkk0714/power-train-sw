@@ -100,6 +100,7 @@ class TerrainDetector:
         r = xc - (xc @ self.n) * self.n
         r /= np.linalg.norm(r)  # 바닥 위 '오른쪽' 방향
         fwd, lat = P @ f, P @ r  # 앞쪽 거리, 좌우 위치(m)
+        self.fwd, self.lat = fwd, lat
 
         floor = valid & (np.abs(H) < self.floor_h)
         obst = (
