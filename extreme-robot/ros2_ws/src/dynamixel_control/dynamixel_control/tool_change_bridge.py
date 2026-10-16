@@ -2,12 +2,13 @@
 
 import json
 import math
+from pathlib import Path
 
 from robot_arm_msgs.msg import ChassisMode
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory
 
-from dynamixel_control.dock_poses import load_docks
+from dynamixel_control.dock_poses import DockPoseStore, load_docks
 from dynamixel_control.qos_profiles import HEARTBEAT_QOS
 from dynamixel_control.tool_change_interlock import ToolChangeDenied, ToolChangeInterlock
 
@@ -18,7 +19,19 @@ class ToolChangeBridge:
     def _init_tool_change(self):
         self._change_gate = ToolChangeInterlock()
         self._dock_table = None
-        self._dock_error = 'dock poses are not loaded'
+        from dynamixel_control.moveit_dynamixel_bridge import JOINT_CONFIG
+        self._dock_store = DockPoseStore(
+            self.get_parameter('toolchanger_dock_file').value, JOINT_CONFIG)
+        self._dock_status_pub = self.create_publisher(String, '/toolchanger/dock_status', 10)
+        self.create_subscription(String, '/toolchanger/dock_command', self._dock_command,
+                                 10, callback_group=self._command_group)
+        if self._dock_store.filename and Path(self._dock_store.filename).is_file():
+            try:
+                self._dock_store.load()
+                if self._dock_store.calibrated:
+                    self._dock_table = self._dock_store.data
+            except Exception as exc:
+                self.get_logger().warn(f'dock table starts uncalibrated: {exc}')
         self._change_status = 'IDLE'
         self._change_error = ''
         self._change_status_pub = self.create_publisher(String, '/toolchanger/change_status', 10)
@@ -66,6 +79,8 @@ class ToolChangeBridge:
                 try:
                     self._stop_tool('tool change arm')
                     self._change_require()
+                    if self.mock_mode:
+                        self.torque_enabled_ids.update(c['id'] for c in JOINT_CONFIG.values())
                     for name, config in JOINT_CONFIG.items():
                         if not self.mock_mode and not self._enable_torque(config['id'], name):
                             raise ToolChangeDenied(f'arm torque enable failed: {name}')
@@ -138,3 +153,44 @@ class ToolChangeBridge:
         self._change_status_pub.publish(String(data=json.dumps(dict(
             state=self._change_status, armed=self._change_gate.active,
             error=self._change_error, docks_valid=self._dock_table is not None))))
+
+    def _dock_command(self, msg):
+        error = ''
+        try:
+            if (self.control_scope != 'TOOL_CHANGE' or self.read_only
+                    or self._change_gate.active):
+                raise ToolChangeDenied('teach requires writable, disarmed TOOL_CHANGE')
+            request = json.loads(msg.data)
+            if request['command'] == 'LOAD':
+                self._dock_store.load()
+            elif request['command'] == 'CAPTURE':
+                self._dock_store.capture(
+                    request['slot_id'], request['pose'], request['tool_type'],
+                    self._dock_arm_samples(), request['tolerance_rad'],
+                    request['timeout_s'], self.get_clock().now().nanoseconds * 1e-9)
+            else:
+                raise ValueError('dock command must be LOAD or CAPTURE')
+            self._dock_table = self._dock_store.data if self._dock_store.calibrated else None
+        except Exception as exc:
+            error = str(exc)
+            self._dock_table = None
+        self._dock_status_pub.publish(String(data=json.dumps(dict(
+            calibrated=self._dock_table is not None, error=error,
+            slots=list(self._dock_store.data['slots'])))))
+
+    def _dock_arm_samples(self):
+        from dynamixel_control.moveit_dynamixel_bridge import JOINT_CONFIG
+        if self.mock_mode:
+            return {name: dict(position=self._mock_arm_positions[name], velocity=0,
+                               torque=int(config['id'] in self.torque_enabled_ids))
+                    for name, config in JOINT_CONFIG.items()}
+        samples = {}
+        with self._bus_lock:
+            for name, config in JOINT_CONFIG.items():
+                motor = config['id']
+                samples[name] = dict(
+                    position=self.tick_to_rad(name, self._read_register(
+                        motor, 132, 4, 'teach position', signed=True)),
+                    velocity=self._read_register(motor, 128, 4, 'teach velocity', signed=True),
+                    torque=self._read_register(motor, 64, 1, 'teach torque'))
+        return samples

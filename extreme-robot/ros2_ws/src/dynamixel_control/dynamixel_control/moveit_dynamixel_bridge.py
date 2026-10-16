@@ -1238,6 +1238,15 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                     f'{self.tool_type} torque enable rejected: '
                     'profile/scope/online/HW gate closed')
                 return
+        if self.control_scope == 'TOOL_CHANGE' and not enable:
+            if self._change_gate.active:
+                self._change_exit('ABORTED', 'operator torque off')
+            if self.mock_mode:
+                self.torque_enabled_ids.difference_update(ids)
+                for motor in ids:
+                    if motor in self._tool_samples:
+                        self._tool_samples[motor]['torque_state'] = 'OFF'
+                return
         if self.mock_mode:
             # Mock must exercise the same explicit-enable state machine, while
             # remaining strictly free of serial/register writes.
