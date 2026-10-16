@@ -18,4 +18,5 @@ read_only 재시작을 확인한다. 실기 연결/구동/NVM 작업은 수행�
    verify: 중단 경로별 단위테스트(토크OFF 쓰기와 confirm 미발행 단언).
 6. 브리지 `CHANGE` 명령과 `/toolchanger/confirm` → verify: 설치된 ros2 run mock E2E에
    음성 대조(임계값 미달 → ABORTED) 포함.
-7. GUI 잠금 버튼 → **미착수(다음 작업)**.
+7. GUI 잠금 버튼 → verify: 패널 게이트 단위테스트 + 실제 mock 브리지에
+   버튼을 눌러 교체 시퀀스를 확인하는 ROS+Qt E2E(음성 대조 포함). 2026-10-16 완료.
