@@ -213,6 +213,18 @@ IDLE → ARMED → TO_RELEASE_APPROACH → TO_RELEASE_SEAT → SEAT_CHECK
 
 → verify: 단계별 육안 확인 + `/joint_states` 기록. 떨굼 0회를 인수 조건으로 둔다.
 
+### 5-6. 마감 — 결과 기록과 임시 포인터 제거
+
+- `docs/reports/`에 결과를 남긴다(실측한 도크 관절각, 통과한 검증, 수용한 위험의 실제 결과).
+- **`AGENTS.md` §2 남은 일 상단의 🚧 임시 포인터 블록을 삭제한다.**
+  이 포인터는 Codex가 착수 지점을 놓치지 않게 두는 것이고, 개발이 끝나면 stale이 된다
+  (2026-10-16 사용자 지시).
+- `AGENTS.md`는 `.claude/CLAUDE.md`의 미러다. 이 포인터는 규칙이 아니라 진행 중 작업
+  안내라서 의도적으로 `AGENTS.md`에만 뒀다. **삭제도 `AGENTS.md`만 고치면 된다.**
+  §2 현재 상태에 완료 사실을 넣을 때는 규칙 변경이므로 그때는 두 파일을 함께 고친다.
+
+→ verify: `grep -n '2026-10-16-arm-auto-tool-change' AGENTS.md` 결과가 비어 있을 것.
+
 ---
 
 ## 6. 먼저 실측해야 하는 값
