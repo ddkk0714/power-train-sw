@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import socket
 import json
-from powertrain_observability.tool_snapshot import normalize_tool
+from powertrain_observability.tool_snapshot import normalize_tool, normalize_lock
 import os
 from powertrain_runtime.telemetry import send_datagram
 import time
@@ -86,6 +86,9 @@ class ArmConsoleBridge(Node):
         self._detections_at: float | None = None
         self._pick_target: DetectedObject | None = None
         self._pick_target_at: float | None = None
+        self._coupling_lock = None
+        self._coupling_lock_at = None
+        self.create_subscription(String, "/toolchanger/status", self._on_coupling_lock, 10)
         self._tool = None
         self._tool_at = None
         self._control_mode = None
@@ -134,6 +137,16 @@ class ArmConsoleBridge(Node):
     def _on_dynamixel(self, message: Int32MultiArray) -> None:
         self._dynamixel = message
         self._dynamixel_at = time.monotonic()
+
+    def _on_coupling_lock(self, message):
+        try:
+            if len(message.data) > 8192:
+                raise ValueError("oversize lock status")
+            self._coupling_lock = normalize_lock(json.loads(message.data))
+            self._coupling_lock_at = time.monotonic()
+        except (ValueError, TypeError):
+            self._coupling_lock = None
+            self._coupling_lock_at = None
 
     def _on_tool(self, message):
         try:
@@ -216,6 +229,9 @@ class ArmConsoleBridge(Node):
                 tool_runtime={
                     'tool': self._tool if self._fresh(self._tool_at, now) else None,
                     'source_age_s': self._age(self._tool_at, now),
+                    'coupling_lock': (self._coupling_lock
+                        if self._fresh(self._coupling_lock_at, now) else None),
+                    'coupling_lock_age_s': self._age(self._coupling_lock_at, now),
                 },
                 arm_runtime={
                     'control_mode': self._control_mode if self._fresh(self._control_mode_at, now) else None,
