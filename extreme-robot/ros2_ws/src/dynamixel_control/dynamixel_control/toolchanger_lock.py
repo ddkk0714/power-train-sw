@@ -123,6 +123,10 @@ class ToolchangerLock:
                     or abs(self.sample['position'] - current) > self.tolerance):
                 raise LockError('ID1 torque enable/readback changed reference')
             self._check_profile()
+            # Correct only encoder-sized settling error, never advance an index on enable.
+            indexed = self.zero_tick + round((current - self.zero_tick) / self.step_ticks) * self.step_ticks
+            if indexed != current and abs(indexed - current) <= self.tolerance:
+                self.io.write('goal', indexed)
         except Exception:
             self.stop()
             raise

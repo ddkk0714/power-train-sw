@@ -156,6 +156,7 @@ class OpsBrokerNode(Node):
         # only forwards a tiny validated vocabulary through the authenticated
         # ops channel; it never owns a motor or publishes a raw Dynamixel goal.
         self._coupling_lock_pub = self.create_publisher(String, "/toolchanger/command", 10)
+        self._local_wrist_pub = self.create_publisher(String, "/arm/local_wrist_jog", 10)
         self._arm_mode_pub = self.create_publisher(String, "/control/mode", 10)
         self._tool_fsm_pub = self.create_publisher(String, "/tool/fsm_command", 10)
         self._tool_change_pub = self.create_publisher(String, "/tool/change", 10)
@@ -509,6 +510,34 @@ class OpsBrokerNode(Node):
             return client
 
     def _execute(self, order, connection, role):
+        if order.kind in ('publish_local_wrist_disable', 'publish_local_wrist_enable'):
+            if order.params:
+                self._complete_order(order, connection, role, False, 'no params allowed')
+                return
+            command = 'DISABLE' if order.kind == 'publish_local_wrist_disable' else 'ENABLE'
+            self._local_wrist_pub.publish(String(data=json.dumps({'command': command})))
+            self._complete_order(order, connection, role, True, 'published wrist torque request')
+            return
+        if order.kind in ("publish_local_wrist_jog", "publish_local_wrist_stop"):
+            from powertrain_observability.tool_snapshot import validate_local_wrist_request
+            action = ("robot_arm_jog" if order.kind == "publish_local_wrist_jog"
+                      else "robot_arm_jog_stop")
+            try:
+                validate_local_wrist_request(action, dict(order.params))
+                if type(order.params.get('axis')) is not int or order.params['axis'] != 5:
+                    raise ValueError('local wrist bench supports only axis 5')
+                if action == 'robot_arm_jog':
+                    remaining = order.params['expires_at_s'] - time.monotonic()
+                    if not 0 < remaining <= 1.0:
+                        raise ValueError('expired or foreign-clock local wrist jog')
+            except (ValueError, TypeError, KeyError) as exc:
+                self._complete_order(order, connection, role, False, str(exc))
+                return
+            self._local_wrist_pub.publish(String(data=json.dumps(dict(
+                order.params, command='JOG' if action == 'robot_arm_jog' else 'STOP'))))
+            self._complete_order(order, connection, role, True,
+                                 'published local wrist request; verify joint feedback')
+            return
         if order.kind in ("publish_lock_command", "publish_lock_stop"):
             from powertrain_observability.tool_snapshot import validate_lock_command
             try:

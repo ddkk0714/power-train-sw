@@ -20,7 +20,7 @@ def normalize_tool(value):
     out = {'tool_type': value['tool_type'], 'actuator_ids': ids, 'actuators': []}
     for key in ('actuators_discovered', 'tool_detached', 'physical_tool_detached',
                 'mock_mode', 'motion_allowed', 'tool_enable_allowed', 'read_only',
-                'emergency_stop', 'calibration_jog_enabled'):
+                'emergency_stop', 'calibration_jog_enabled', 'manual_coupling_lock'):
         item = value.get(key)
         if item is not None and type(item) is not bool:
             raise ValueError('invalid tool flag')
@@ -156,3 +156,28 @@ def normalize_lock(value):
             raise ValueError('invalid lock status text')
         result[key] = item
     return result
+
+
+def validate_local_wrist_request(action, params):
+    """The local bench accepts only axis 5, with bounded jog lifetime metadata."""
+    stop = action == 'robot_arm_jog_stop'
+    required = ({'axis', 'sequence', 'reason'} if stop else
+                {'axis', 'sequence', 'direction', 'expires_at_s'})
+    allowed = required if stop else required | {'speed_level'}
+    if not required <= params.keys() or not params.keys() <= allowed:
+        raise ValueError('invalid local wrist parameters')
+    if type(params['axis']) is not int or params['axis'] != 5:
+        raise ValueError('local wrist bench supports only axis 5')
+    if type(params['sequence']) is not int or params['sequence'] < 0:
+        raise ValueError('invalid wrist sequence')
+    if stop:
+        if not isinstance(params['reason'], str) or not 1 <= len(params['reason']) <= 64:
+            raise ValueError('invalid wrist stop reason')
+    else:
+        if type(params['direction']) is not int or params['direction'] not in (-1, 1):
+            raise ValueError('invalid wrist direction')
+        if type(params['expires_at_s']) not in (int, float) or not math.isfinite(params['expires_at_s']):
+            raise ValueError('invalid wrist deadline')
+        if 'speed_level' in params and (type(params['speed_level']) is not int
+                                       or not 0 <= params['speed_level'] <= 10):
+            raise ValueError('invalid wrist speed level')

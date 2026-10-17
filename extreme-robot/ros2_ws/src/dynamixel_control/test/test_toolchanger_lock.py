@@ -150,3 +150,11 @@ def test_zero_file_roundtrip_and_wrong_motor_rejected(tmp_path):
     path.write_text('{"actuator_id": 2}')
     with pytest.raises(LockError):
         ToolchangerLock.load_zero(path)
+
+
+def test_enable_seats_only_the_current_calibrated_index():
+    io = IO()
+    lock = ToolchangerLock(io, zero_tick=2048, zero_state='LOCKED')
+    io.sample['position'] = 2046
+    lock.enable()
+    assert ('goal', 2048) in io.writes

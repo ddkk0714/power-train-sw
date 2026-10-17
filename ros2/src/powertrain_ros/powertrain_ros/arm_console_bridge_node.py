@@ -178,6 +178,9 @@ class ArmConsoleBridge(Node):
         self._on_runtime('arm_status', message.status)
 
     def _on_joints(self, message: JointState) -> None:
+        # The lock wheel publishes separately; it must not replace the arm sample.
+        if list(message.name) == ['toolchanger_lock_wheel']:
+            return
         self._joints = message
         self._joints_at = time.monotonic()
 

@@ -147,3 +147,25 @@ def test_session_rejects_incomplete_lock_payload_without_transporting_it():
     outcome = session.coupling_lock_command('CHANGE', {'to': 'LOCKED'})
     assert not outcome and outcome.reason == 'invalid_params'
     assert not transport.accepted
+
+
+def test_pressed_wrist_jog_is_refreshed_only_while_active_and_permitted():
+    calls = []
+    from operator_console.arm_ui.keyboard_panel import KeyboardTeleopPanel
+    callbacks = C.ArmUiCallbacks(jog_start=lambda *args: calls.append(args),
+                                jog_stop=lambda *_args: None)
+    panel = KeyboardTeleopPanel(callbacks)
+    state = fixtures.single_gripper()
+    state = replace(state, teleop=replace(state.teleop, selected_axis=5),
+                    capabilities=state.capabilities | {C.CAP_TELEOP_JOG})
+    try:
+        panel.set_active(True)
+        panel.update(state)
+        panel._jog_plus.emit('pressed')
+        panel.update(state)
+        assert calls == [(5, 1), (5, 1)]
+        panel._jog_plus.emit('released')
+        panel.update(state)
+        assert len(calls) == 2
+    finally:
+        panel.dispose()
