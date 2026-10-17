@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import math
 import threading
 import time
@@ -428,11 +429,45 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         self.declare_parameter("read_only", False)
         self.declare_parameter('manual_coupling_lock', False)
         self.manual_coupling_lock = bool(self.get_parameter('manual_coupling_lock').value)
+        # Bench-only: false lets the local wrist jog ignore coupling-lock readiness.
+        self.declare_parameter('local_wrist_lock_gate', True)
+        self.local_wrist_lock_gate = bool(self.get_parameter('local_wrist_lock_gate').value)
+        # Bench-only: console jog for arm axes 1-5. Each request may switch the
+        # joint-limit clamp and the present-current trip off ('limits'/'trip').
+        self.declare_parameter('local_jog_all_axes', False)
+        self.local_jog_all_axes = bool(self.get_parameter('local_jog_all_axes').value)
+        # Joint radians per jog refresh; 0 keeps the original 12-tick (about 1 degree) step.
+        self.declare_parameter('local_jog_step_rad', 0.0)
+        self.local_jog_step_rad = float(self.get_parameter('local_jog_step_rad').value)
+        self.declare_parameter('local_jog_trip_threshold', 500)
+        self.local_jog_trip_threshold = int(
+            self.get_parameter('local_jog_trip_threshold').value)
+        # Bench-only saved poses, same JSON layout as teleop_core's poses_file.
+        self.declare_parameter('local_poses_file', '')
+        # Profile Velocity for pose moves (teleop_core goto_profile_velocity is 20).
+        self.declare_parameter('local_pose_profile_velocity', 20)
+        self.local_pose_profile_velocity = int(
+            self.get_parameter('local_pose_profile_velocity').value)
+        # Joint deg/s for arm_joint_1..N during pose moves; 0 uses the flat profile above.
+        self.declare_parameter('local_pose_joint_speeds_deg_s', [0.0])
+        # Seconds after a pose move starts before arm_joint_1..N gets its goal.
+        self.declare_parameter('local_pose_joint_delays_s', [0.0])
+        self.local_pose_joint_delays = [float(v) for v in
+                                        self.get_parameter('local_pose_joint_delays_s').value]
+        self.local_pose_joint_speeds = [float(v) for v in
+                                        self.get_parameter('local_pose_joint_speeds_deg_s').value]
+        self.local_poses_file = str(self.get_parameter('local_poses_file').value)
+        self._local_poses = self._load_local_poses()
+        self._pose_move = None
         self.declare_parameter('toolchanger_enabled', True)
         self.declare_parameter('toolchanger_position_tolerance_ticks', 4)
         self.declare_parameter('toolchanger_zero_tick', -1)
         self.declare_parameter('toolchanger_zero_state', 'UNKNOWN')
         self.declare_parameter('toolchanger_zero_file', '')
+        # Bench-only two-point lock (recorded LOCKED/UNLOCKED ticks, see toolchanger_lock).
+        self.declare_parameter('toolchanger_two_point', False)
+        self.declare_parameter('toolchanger_points_file', '')
+        self.declare_parameter('toolchanger_state_tolerance_ticks', 20)
         # 0이면 결합 부하 프록시를 끈다. 실측 전에는 기본값을 쓰지 않는다.
         self.declare_parameter('toolchanger_coupling_load_threshold', 0)
         self.declare_parameter('toolchanger_mock_load', 0)
@@ -725,6 +760,14 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             if not 1 <= tolerance <= 12:
                 raise ValueError('toolchanger position tolerance must be 1..12 ticks')
             self.toolchanger.tolerance = tolerance
+            if self.get_parameter('toolchanger_two_point').value:
+                self.toolchanger.two_point = True
+                self.toolchanger.zero_tick = None
+                self.toolchanger.state_tolerance = int(
+                    self.get_parameter('toolchanger_state_tolerance_ticks').value)
+                points_file = self.get_parameter('toolchanger_points_file').value
+                if points_file and Path(points_file).exists():
+                    self.toolchanger.load_points(points_file)
             self.lock_sequence = ToolchangerSequence(
                 self.toolchanger, self._prepare_tool_for_lock,
                 load_threshold=self.get_parameter(
@@ -1024,6 +1067,12 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                                  callback_group=self._command_group)
         self.create_timer(0.05, self._local_wrist_deadman,
                           callback_group=self._command_group)
+        if self.local_jog_all_axes and self.local_poses_file:
+            self.create_subscription(String, '/arm/local_pose',
+                                     self._local_pose_command, 10,
+                                     callback_group=self._command_group)
+            self.create_timer(0.1, self._local_pose_watch,
+                              callback_group=self._command_group)
         self.joint_state_pub = self.create_publisher(
             JointState,
             "/joint_states",
@@ -2016,6 +2065,15 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             with self._bus_lock:
                 torque = self._read_register(
                     dxl_id, ADDR_TORQUE_ENABLE, 1, "startup torque")
+                if (torque != TORQUE_DISABLE and dxl_id in ARM_IDS
+                        and getattr(self, 'local_jog_all_axes', False)):
+                    present = self._read_register(
+                        dxl_id, ADDR_PRESENT_POSITION, 4, "adopt present", signed=True)
+                    self._write_register(
+                        dxl_id, ADDR_GOAL_POSITION, 4, present & 0xFFFFFFFF, "adopt goal")
+                    self._write_motion_profile(dxl_id, label, velocity)
+                    self.get_logger().info(f"Adopted holding servo: {label} -> id {dxl_id}")
+                    return True
                 if torque != TORQUE_DISABLE:
                     raise RuntimeError(
                         f"startup requires Torque OFF, readback={torque}")
@@ -2912,6 +2970,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         lock = getattr(self, 'toolchanger', None)
         return lock is None or lock.ready
 
+    def _wrist_lock_ok(self):
+        return not getattr(self, 'local_wrist_lock_gate', True) or self._lock_ready()
+
     def _prepare_tool_for_lock(self):
         """잠금이 움직이기 전에 선택된 도구의 정지와 토크OFF를 확인한다."""
         if (getattr(self, 'manual_coupling_lock', False)
@@ -2970,9 +3031,10 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             self.joint_state_pub.publish(msg)
 
     def _hold_local_wrist(self):
-        if 16 in self.active_ids and not self.mock_mode and not self.read_only:
-            position = self._read_register(16, 132, 4, 'wrist stop position', signed=True)
-            self._write_register(16, 116, 4, position & 0xffffffff, 'wrist hold')
+        dxl_id = getattr(self, '_local_jog_id', 16)
+        if dxl_id in self.active_ids and not self.mock_mode and not self.read_only:
+            position = self._read_register(dxl_id, 132, 4, 'wrist stop position', signed=True)
+            self._write_register(dxl_id, 116, 4, position & 0xffffffff, 'wrist hold')
         self._wrist_jog.deadline = None
 
     def _local_wrist_command(self, msg):
@@ -2983,6 +3045,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             try:
                 request = json.loads(msg.data)
                 if request == {'command': 'DISABLE'}:
+                    self._hold_local_pose()
                     self._hold_local_wrist()
                     self._write_register(16, 64, 1, 0, 'wrist disable')
                     self.torque_enabled_ids.discard(16)
@@ -2990,29 +3053,236 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                     return
                 if request == {'command': 'ENABLE'}:
                     if (self.control_mode != 'MANUAL' or self.emergency_stop_active
-                            or not self._lock_ready()):
+                            or not self._wrist_lock_ok()):
                         raise RuntimeError('lock must be ready before wrist enable')
                     if self._enable_torque(16, 'arm_joint_5'):
                         self.torque_enabled_ids.add(16)
                     return
-                direction = self._wrist_jog.accept(request, time.monotonic())
+                axes = (1, 2, 3, 4, 5) if self.local_jog_all_axes else (5,)
+                direction = self._wrist_jog.accept(request, time.monotonic(), axes)
+                self._hold_local_pose()
                 if direction == 0:
                     self._hold_local_wrist()
                     return
+                joint = f"arm_joint_{request['axis']}"
+                dxl_id = JOINT_CONFIG[joint]['id']
+                if dxl_id != getattr(self, '_local_jog_id', 16):
+                    # Switching axes: freeze the previous one first.
+                    deadline = self._wrist_jog.deadline
+                    self._hold_local_wrist()
+                    self._wrist_jog.deadline = deadline
+                    self._local_jog_id = dxl_id
                 if (self.control_mode != 'MANUAL' or self.emergency_stop_active
-                        or not self._lock_ready() or 16 not in self.active_ids):
+                        or not self._wrist_lock_ok() or dxl_id not in self.active_ids):
                     raise RuntimeError('local wrist manual/lock gate is not ready')
-                if (self._read_register(16, 70, 1, 'wrist error') != 0
-                        or self._read_register(16, 64, 1, 'wrist torque') != 1):
+                if (self._read_register(dxl_id, 70, 1, 'wrist error') != 0
+                        or self._read_register(dxl_id, 64, 1, 'wrist torque') != 1):
                     raise RuntimeError('wrist hardware error or torque OFF')
-                position = self._read_register(16, 132, 4, 'wrist position', signed=True)
-                center = self._joint_center('arm_joint_5')
-                # Each refresh advances at most 1.05 degrees, within +/-10 degrees.
-                target = max(center - 114, min(center + 114, position + direction * 12))
-                self._write_register(16, 116, 4, target & 0xffffffff, 'local wrist jog')
+                bench = self.local_jog_all_axes
+                limits_on = not bench or request.get('limits') is not False
+                trip_on = not bench or request.get('trip') is not False
+                if bench and trip_on:
+                    current = self._read_register(dxl_id, 126, 2, 'jog current', signed=True)
+                    if abs(current) > self.local_jog_trip_threshold:
+                        raise RuntimeError(
+                            f'{joint} current trip: |{current}| > {self.local_jog_trip_threshold}')
+                position = self._read_register(dxl_id, 132, 4, 'wrist position', signed=True)
+                # Each refresh advances about 1.05 joint degrees (ticks scale with gearing).
+                ratio = self._joint_gear_ratio(joint)
+                step = (round(self.local_jog_step_rad * 4096 / (2 * math.pi) * ratio)
+                        if bench and self.local_jog_step_rad > 0 else round(12 * ratio))
+                target = position + direction * JOINT_CONFIG[joint]['direction'] * step
+                if limits_on:
+                    center = self._joint_center(joint)
+                    bounds = joint_limits.get_limits(joint) if joint != 'arm_joint_5' else None
+                    if bounds is None:
+                        low, high = center - 114, center + 114
+                    else:
+                        low, high = sorted(int(round(calib_math.rad_to_tick(
+                            center, JOINT_CONFIG[joint]['direction'],
+                            self._joint_gear_ratio(joint), rad))) for rad in bounds)
+                    # Never pull a joint that is already outside back to the edge.
+                    if target > high:
+                        target = max(position, high)
+                    elif target < low:
+                        target = min(position, low)
+                self._write_register(dxl_id, 116, 4, target & 0xffffffff, 'local wrist jog')
             except Exception as exc:
                 self._hold_local_wrist()
                 self.get_logger().warn(f'local wrist jog rejected: {exc}')
+
+    # arm_joint_5 stays out of saved poses, as in teleop_core (POSE_EXCLUDED_NAMES).
+    LOCAL_POSE_EXCLUDED = ('arm_joint_5',)
+
+    def _load_local_poses(self):
+        if not self.local_poses_file or not os.path.isfile(self.local_poses_file):
+            return {}
+        try:
+            with open(self.local_poses_file) as f:
+                data = json.load(f)
+            return {str(n): {str(j): float(v) for j, v in joints.items()}
+                    for n, joints in data.items()}
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            self.get_logger().error(f'pose file load failed: {exc}')
+            return {}
+
+    def _save_local_poses(self):
+        tmp = self.local_poses_file + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(self._local_poses, f, indent=2, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp, self.local_poses_file)
+
+    def _hold_local_pose(self):
+        move, self._pose_move = self._pose_move, None
+        for dxl_id in (move or {}).get('ids', ()):
+            position = self._read_register(dxl_id, 132, 4, 'pose hold position', signed=True)
+            self._write_register(dxl_id, 116, 4, position & 0xffffffff, 'pose hold')
+        self._restore_jog_profile(move)
+
+    def _pose_profile(self, joint, dxl_id):
+        """Profile Velocity giving the configured joint speed through the gearbox."""
+        index = int(joint.rsplit('_', 1)[1]) - 1
+        speeds = self.local_pose_joint_speeds
+        if index >= len(speeds) or speeds[index] <= 0:
+            return self.local_pose_profile_velocity
+        # One Profile Velocity unit is 0.229 rev/min = 1.374 motor deg/s.
+        wanted = round(speeds[index] * self._joint_gear_ratio(joint) / 1.374)
+        limit = self._read_register(dxl_id, 44, 4, 'velocity limit')
+        return max(1, min(limit, wanted))
+
+    def _restore_jog_profile(self, move):
+        for dxl_id in (move or {}).get('ids', ()):
+            self._write_register(dxl_id, 112, 4, int(self.arm_profile_velocity), 'jog profile')
+
+    def _local_pose_command(self, msg):
+        with self._bus_lock:
+            try:
+                request = json.loads(msg.data)
+                command = request.get('command')
+                name = ('home' if command == 'HOME' else command.lower()
+                        if command in ('FREEDRIVE', 'FREEDRIVE_RELEASE')
+                        else str(request.get('name') or '').strip().lower())
+                if not name:
+                    raise ValueError('pose name is required')
+                if command in ('FREEDRIVE', 'FREEDRIVE_RELEASE'):
+                    self._local_freedrive(command == 'FREEDRIVE')
+                elif command == 'DELETE':
+                    if self._local_poses.pop(name, None) is None:
+                        raise ValueError(f'unknown pose {name!r}')
+                    self._save_local_poses()
+                elif command == 'SAVE':
+                    pose = {}
+                    for joint, config in JOINT_CONFIG.items():
+                        if joint in self.LOCAL_POSE_EXCLUDED or config['id'] not in self.active_ids:
+                            continue
+                        tick = self._read_register(config['id'], 132, 4, 'pose save', signed=True)
+                        pose[joint] = self.tick_to_rad(joint, tick)
+                    if not pose:
+                        raise RuntimeError('no active arm joint to save')
+                    self._local_poses[name] = pose
+                    self._save_local_poses()
+                elif command in ('MOVE', 'HOME'):
+                    pose = self._local_poses.get(name)
+                    if pose is None:
+                        raise ValueError(f'unknown pose {name!r}')
+                    if (self.control_mode != 'MANUAL' or self.emergency_stop_active
+                            or self._wrist_jog.deadline is not None):
+                        raise RuntimeError('pose move needs MANUAL, no E-stop and no active jog')
+                    limits_on = request.get('limits') is not False
+                    if limits_on:
+                        # A silently clamped pose is a different pose: refuse it whole.
+                        outside = [j for j, r in pose.items()
+                                   if j in JOINT_CONFIG and joint_limits.clamp(j, r)[1]]
+                        if outside:
+                            raise RuntimeError(
+                                f'pose {name!r} is outside joint limits at {outside}; '
+                                'turn the joint-limit switch OFF to move there')
+                    ids, pending, starts = [], [], {}
+                    now = time.monotonic()
+                    for joint, rad in pose.items():
+                        config = JOINT_CONFIG.get(joint)
+                        if (config is None or joint in self.LOCAL_POSE_EXCLUDED
+                                or config['id'] not in self.active_ids):
+                            continue
+                        tick = int(round(calib_math.rad_to_tick(
+                            self._joint_center(joint), config['direction'],
+                            self._joint_gear_ratio(joint), rad)))
+                        if config['extended']:
+                            tick = max(DXL_EXTENDED_MIN_TICK, min(DXL_EXTENDED_MAX_TICK, tick))
+                        else:
+                            tick = max(DXL_MINIMUM_POSITION_VALUE, min(DXL_MAXIMUM_POSITION_VALUE, tick))
+                        self._write_register(config['id'], 112, 4,
+                                             self._pose_profile(joint, config['id']), 'pose profile')
+                        index = int(joint.rsplit('_', 1)[1]) - 1
+                        delays = self.local_pose_joint_delays
+                        delay = delays[index] if index < len(delays) else 0.0
+                        if delay > 0:
+                            pending.append((now + delay, config['id'], tick))
+                        else:
+                            self._write_register(config['id'], 116, 4, tick & 0xffffffff, 'pose goal')
+                            starts[config['id']] = now
+                        ids.append(config['id'])
+                    self._pose_move = {'ids': ids, 'trip': request.get('trip') is not False,
+                                       'pending': pending, 'starts': starts}
+                else:
+                    raise ValueError(f'unknown pose command {command!r}')
+                self.get_logger().info(f'local pose {command} {name!r}')
+            except Exception as exc:
+                self._hold_local_pose()
+                self.get_logger().warn(f'local pose rejected: {exc}')
+
+    def _local_freedrive(self, free):
+        """Torque OFF (free) or hold-in-place ON for the saved-pose joints (1-4)."""
+        if free and (self.control_mode != 'MANUAL' or self.emergency_stop_active
+                     or self._wrist_jog.deadline is not None):
+            raise RuntimeError('freedrive needs MANUAL, no E-stop and no active jog')
+        self._hold_local_pose()
+        for joint, config in JOINT_CONFIG.items():
+            dxl_id = config['id']
+            if joint in self.LOCAL_POSE_EXCLUDED or dxl_id not in self.active_ids:
+                continue
+            if free:
+                self._write_register(dxl_id, 64, 1, 0, 'freedrive torque off')
+                self.torque_enabled_ids.discard(dxl_id)
+            else:
+                position = self._read_register(dxl_id, 132, 4, 'freedrive hold', signed=True)
+                self._write_register(dxl_id, 116, 4, position & 0xffffffff, 'freedrive goal')
+                self._write_register(dxl_id, 64, 1, 1, 'freedrive torque on')
+                self.torque_enabled_ids.add(dxl_id)
+
+    def _local_pose_watch(self):
+        """Hold a pose move on MANUAL loss, E-stop or current trip; end it on arrival."""
+        if self._pose_move is None:
+            return
+        with self._bus_lock:
+            try:
+                if self.control_mode != 'MANUAL' or self.emergency_stop_active:
+                    raise RuntimeError('MANUAL lost or E-stop')
+                now = time.monotonic()
+                starts = self._pose_move['starts']
+                for item in list(self._pose_move['pending']):
+                    due, dxl_id, tick = item
+                    if now >= due:
+                        self._write_register(dxl_id, 116, 4, tick & 0xffffffff, 'pose delayed goal')
+                        starts[dxl_id] = now
+                        self._pose_move['pending'].remove(item)
+                arrived = not self._pose_move['pending']
+                for dxl_id in self._pose_move['ids']:
+                    if dxl_id not in starts:
+                        continue  # delayed joint has no goal yet
+                    if (self._pose_move['trip'] and now - starts[dxl_id] > 0.5):
+                        current = self._read_register(dxl_id, 126, 2, 'pose current', signed=True)
+                        if abs(current) > self.local_jog_trip_threshold:
+                            raise RuntimeError(f'id {dxl_id} current trip |{current}|')
+                    position = self._read_register(dxl_id, 132, 4, 'pose position', signed=True)
+                    goal = self._read_register(dxl_id, 116, 4, 'pose goal', signed=True)
+                    arrived = arrived and abs(goal - position) <= 20
+                if arrived:
+                    move, self._pose_move = self._pose_move, None
+                    self._restore_jog_profile(move)
+            except Exception as exc:
+                self._hold_local_pose()
+                self.get_logger().warn(f'local pose held: {exc}')
 
     def _local_wrist_deadman(self):
         if self._wrist_jog.deadline is None:
@@ -3020,7 +3290,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         with self._bus_lock:
             if (self._wrist_jog.expired(time.monotonic())
                     or self.control_mode != 'MANUAL' or self.emergency_stop_active
-                    or not self._lock_ready()):
+                    or not self._wrist_lock_ok()):
                 self._hold_local_wrist()
 
     def _require_manual_lock_arm_stopped(self):
@@ -3077,6 +3347,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                     self._require_manual_lock_arm_stopped()
                 if command == 'SET_ZERO':
                     self.toolchanger.capture_zero(request.get('state'))
+                    points_file = self.get_parameter('toolchanger_points_file').value
+                    if self.toolchanger.two_point and points_file:
+                        self.toolchanger.save_points(points_file)
                     zero_file = self.get_parameter('toolchanger_zero_file').value
                     if zero_file:
                         try:
@@ -3475,6 +3748,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             'motion_allowed': self._tool_backend_ready(),
             'toolchanger': (self._toolchanger_snapshot() if getattr(self, 'toolchanger', None) else {'enabled': False}),
             'manual_coupling_lock': self.manual_coupling_lock,
+            'poses': (sorted(self._local_poses)
+                      if self.local_jog_all_axes and self.local_poses_file else None),
             'read_only': self.read_only, 'mock_mode': self.mock_mode,
             'bridge_connected': True,
             'u2d2_connected': self.port_connected,

@@ -66,6 +66,8 @@ ACTION_HOME = "robot_arm_home"
 ACTION_POSE_SAVE = "robot_arm_pose_save"
 ACTION_POSE_MOVE = "robot_arm_pose_move"
 ACTION_POSE_DELETE = "robot_arm_pose_delete"
+ACTION_FREEDRIVE = "robot_arm_freedrive"
+ACTION_FREEDRIVE_RELEASE = "robot_arm_freedrive_release"
 ACTION_TOOL_COMMAND = "robot_arm_tool_command"
 ACTION_TOOL_ENABLE = "robot_arm_tool_enable"
 ACTION_TOOL_JOG = "robot_arm_tool_jog"
@@ -206,6 +208,15 @@ def _is_axis(value: Any) -> bool:
     return _is_int(value) and 1 <= value <= 6
 
 
+# Bench-only jog switches ('limits', 'trip') attached to every arm jog refresh.
+# Empty means the backend defaults (both ON).
+BENCH_JOG_FLAGS: dict[str, bool] = {}
+
+
+def _is_bool(value: Any) -> bool:
+    return type(value) is bool
+
+
 def _is_speed_level(value: Any) -> bool:
     return _is_int(value) and 0 <= value <= 10
 
@@ -263,6 +274,8 @@ ACTION_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         _spec("axis", _is_axis),
         _spec("direction", _in(DIRECTIONS)),
         _spec("speed_level", _is_speed_level, required=False),
+        _spec("limits", _is_bool, required=False, note="벤치 전용: 관절 제한"),
+        _spec("trip", _is_bool, required=False, note="벤치 전용: 전류 트립"),
         *_JOG_LIFETIME,
     ),
     ACTION_JOG_STOP: (
@@ -272,10 +285,15 @@ ACTION_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
     ),
     ACTION_STOP: (),
     ACTION_RESUME_HOLD: (),
-    ACTION_HOME: (),
+    ACTION_HOME: (_spec("limits", _is_bool, required=False),
+                  _spec("trip", _is_bool, required=False)),
     ACTION_POSE_SAVE: (_spec("name", _is_str),),
-    ACTION_POSE_MOVE: (_spec("name", _is_str),),
+    ACTION_POSE_MOVE: (_spec("name", _is_str),
+                       _spec("limits", _is_bool, required=False),
+                       _spec("trip", _is_bool, required=False)),
     ACTION_POSE_DELETE: (_spec("name", _is_str),),
+    ACTION_FREEDRIVE: (),
+    ACTION_FREEDRIVE_RELEASE: (),
     ACTION_TOOL_COMMAND: (
         _spec("target", _in(TOOL_TARGETS)),
         _spec("command", _in(TOOL_COMMANDS)),
@@ -456,6 +474,8 @@ PLANNED_ACTIONS: tuple[PlannedAction, ...] = tuple(
         (ACTION_POSE_SAVE, "현재 자세 저장"),
         (ACTION_POSE_MOVE, "저장 자세로 이동"),
         (ACTION_POSE_DELETE, "저장 자세 삭제"),
+        (ACTION_FREEDRIVE, "자세 자유 지정: 1~4축 토크 해제(손으로 자세 잡기)"),
+        (ACTION_FREEDRIVE_RELEASE, "자유 지정 해제: 현재 자세 그대로 1~4축 토크 복귀"),
         (ACTION_TOOL_COMMAND, "그리퍼 open/close/stop. 백엔드의 정상 FSM 경로를 사용해야 한다"),
         (ACTION_TOOL_ENABLE, "현재 감지 도구의 프로필에 고정된 actuator 토크 활성화/해제"),
         (ACTION_TOOL_JOG, "그리퍼 누름 조그. deadman"),

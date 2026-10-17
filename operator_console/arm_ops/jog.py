@@ -274,6 +274,8 @@ class JogRegistry:
         params["direction"] = active.direction
         if active.speed_level is not None:
             params["speed_level"] = active.speed_level
+        if active.channel.action == K.ACTION_JOG:
+            params.update(K.BENCH_JOG_FLAGS)
         params["expires_at_s"] = float(now) + self._ttl_s
         params["sequence"] = active.sequence
         return K.ArmOpsRequest(

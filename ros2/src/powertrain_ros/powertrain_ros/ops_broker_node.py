@@ -157,6 +157,7 @@ class OpsBrokerNode(Node):
         # ops channel; it never owns a motor or publishes a raw Dynamixel goal.
         self._coupling_lock_pub = self.create_publisher(String, "/toolchanger/command", 10)
         self._local_wrist_pub = self.create_publisher(String, "/arm/local_wrist_jog", 10)
+        self._local_pose_pub = self.create_publisher(String, "/arm/local_pose", 10)
         self._arm_mode_pub = self.create_publisher(String, "/control/mode", 10)
         self._tool_fsm_pub = self.create_publisher(String, "/tool/fsm_command", 10)
         self._tool_change_pub = self.create_publisher(String, "/tool/change", 10)
@@ -510,6 +511,21 @@ class OpsBrokerNode(Node):
             return client
 
     def _execute(self, order, connection, role):
+        if order.kind == 'publish_local_pose':
+            from powertrain_observability.tool_snapshot import validate_local_pose_request
+            try:
+                validate_local_pose_request(order.action, dict(order.params))
+            except (ValueError, TypeError) as exc:
+                self._complete_order(order, connection, role, False, str(exc))
+                return
+            command = {'robot_arm_pose_save': 'SAVE', 'robot_arm_pose_move': 'MOVE',
+                       'robot_arm_pose_delete': 'DELETE', 'robot_arm_home': 'HOME',
+                       'robot_arm_freedrive': 'FREEDRIVE',
+                       'robot_arm_freedrive_release': 'FREEDRIVE_RELEASE'}[order.action]
+            self._local_pose_pub.publish(String(data=json.dumps(dict(order.params, command=command))))
+            self._complete_order(order, connection, role, True,
+                                 'published local pose request; verify joint feedback')
+            return
         if order.kind in ('publish_local_wrist_disable', 'publish_local_wrist_enable'):
             if order.params:
                 self._complete_order(order, connection, role, False, 'no params allowed')
@@ -524,8 +540,9 @@ class OpsBrokerNode(Node):
                       else "robot_arm_jog_stop")
             try:
                 validate_local_wrist_request(action, dict(order.params))
-                if type(order.params.get('axis')) is not int or order.params['axis'] != 5:
-                    raise ValueError('local wrist bench supports only axis 5')
+                axes = (1, 2, 3, 4, 5) if os.environ.get('ARM_LOCAL_ALL_AXES') == '1' else (5,)
+                if type(order.params.get('axis')) is not int or order.params['axis'] not in axes:
+                    raise ValueError(f'local bench supports only axes {axes}')
                 if action == 'robot_arm_jog':
                     remaining = order.params['expires_at_s'] - time.monotonic()
                     if not 0 < remaining <= 1.0:

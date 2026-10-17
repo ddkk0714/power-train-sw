@@ -257,7 +257,7 @@ class ArmCommandSession:
         return self._issue(K.ACTION_RESUME_HOLD, intent="복귀")
 
     def go_home(self) -> CommandOutcome:
-        return self._issue(K.ACTION_HOME, intent="home")
+        return self._issue(K.ACTION_HOME, dict(K.BENCH_JOG_FLAGS), intent="home")
 
     def save_pose(self, name: str) -> CommandOutcome:
         return self._issue(
@@ -265,7 +265,13 @@ class ArmCommandSession:
 
     def move_to_pose(self, name: str) -> CommandOutcome:
         return self._issue(
-            K.ACTION_POSE_MOVE, {"name": str(name)}, intent="자세 이동")
+            K.ACTION_POSE_MOVE, {"name": str(name), **K.BENCH_JOG_FLAGS}, intent="자세 이동")
+
+    def freedrive(self) -> CommandOutcome:
+        return self._issue(K.ACTION_FREEDRIVE, intent="자세 자유 지정")
+
+    def freedrive_release(self) -> CommandOutcome:
+        return self._issue(K.ACTION_FREEDRIVE_RELEASE, intent="자유 지정 해제")
 
     def delete_pose(self, name: str) -> CommandOutcome:
         return self._issue(

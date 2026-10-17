@@ -1,5 +1,6 @@
 """Bounded, observation-only projection of the arm team's tool status."""
 import math
+import os
 
 TOOL_LABELS = {
     'spur_1motor_gripper': '단일 그리퍼',
@@ -30,6 +31,12 @@ def normalize_tool(value):
         if item is not None and (not isinstance(item, str) or len(item) > 160):
             raise ValueError('invalid tool status text')
         out[key] = item.strip() if item else None
+    poses = value.get('poses')
+    if poses is not None:
+        if (not isinstance(poses, list) or len(poses) > 64
+                or any(not isinstance(p, str) or not 1 <= len(p) <= 64 for p in poses)):
+            raise ValueError('invalid pose list')
+        out['poses'] = poses
     dual_calibration = value.get('dual_calibration')
     if isinstance(dual_calibration, dict):
         out['dual_calibration'] = {
@@ -139,12 +146,13 @@ def normalize_lock(value):
     if not isinstance(value, dict):
         raise ValueError('invalid lock status')
     result = {}
-    for key in ('enabled', 'mechanically_confirmed'):
+    for key in ('enabled', 'mechanically_confirmed', 'two_point'):
         item = value.get(key)
         if item is not None and type(item) is not bool:
             raise ValueError('invalid lock flag')
         result[key] = item
-    for key in ('zero_tick', 'position', 'torque', 'coupling_peak_load'):
+    for key in ('zero_tick', 'position', 'torque', 'coupling_peak_load',
+                'locked_tick', 'unlocked_tick', 'state_tolerance'):
         item = value.get(key)
         if item is not None and (type(item) not in (int, float) or not math.isfinite(item)):
             raise ValueError('invalid lock feedback')
@@ -158,16 +166,37 @@ def normalize_lock(value):
     return result
 
 
+def validate_local_pose_request(action, params):
+    """Bench-only pose actions: a short name (except home) and optional switches."""
+    if os.environ.get('ARM_LOCAL_ALL_AXES') != '1':
+        raise ValueError('local pose actions are bench-only')
+    named = action not in ('robot_arm_home', 'robot_arm_freedrive',
+                           'robot_arm_freedrive_release')
+    allowed = ({'name'} if named else set()) | (
+        {'limits', 'trip'} if action in ('robot_arm_pose_move', 'robot_arm_home') else set())
+    if not params.keys() <= allowed or (named and 'name' not in params):
+        raise ValueError('invalid local pose parameters')
+    if named and (not isinstance(params['name'], str) or not 1 <= len(params['name'].strip()) <= 64):
+        raise ValueError('invalid pose name')
+    for flag in ('limits', 'trip'):
+        if flag in params and type(params[flag]) is not bool:
+            raise ValueError(f'invalid {flag} flag')
+
+
 def validate_local_wrist_request(action, params):
     """The local bench accepts only axis 5, with bounded jog lifetime metadata."""
     stop = action == 'robot_arm_jog_stop'
     required = ({'axis', 'sequence', 'reason'} if stop else
                 {'axis', 'sequence', 'direction', 'expires_at_s'})
-    allowed = required if stop else required | {'speed_level'}
+    allowed = required if stop else required | {'speed_level', 'limits', 'trip'}
     if not required <= params.keys() or not params.keys() <= allowed:
         raise ValueError('invalid local wrist parameters')
-    if type(params['axis']) is not int or params['axis'] != 5:
-        raise ValueError('local wrist bench supports only axis 5')
+    axes = (1, 2, 3, 4, 5) if os.environ.get('ARM_LOCAL_ALL_AXES') == '1' else (5,)
+    if type(params['axis']) is not int or params['axis'] not in axes:
+        raise ValueError(f'local bench supports only axes {axes}')
+    for flag in ('limits', 'trip'):
+        if flag in params and type(params[flag]) is not bool:
+            raise ValueError(f'invalid {flag} flag')
     if type(params['sequence']) is not int or params['sequence'] < 0:
         raise ValueError('invalid wrist sequence')
     if stop:

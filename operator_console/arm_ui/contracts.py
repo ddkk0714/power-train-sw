@@ -388,6 +388,7 @@ class ArmUiCallbacks:
     release_control_mode: Callback = None         # ()
     # 키보드 텔레옵
     select_axis: Callback = None                  # (axis_index: int)
+    set_bench_flag: Callback = None               # (key: str, on: bool) bench-only
     jog_start: Callback = None                    # (axis_index: int, direction: int)
     jog_stop: Callback = None                     # (axis_index: int)
     change_speed: Callback = None                 # (delta: int)  -1 = '[', +1 = ']'
@@ -397,6 +398,8 @@ class ArmUiCallbacks:
     save_pose: Callback = None                    # (name: str)
     move_to_pose: Callback = None                 # (name: str)
     delete_pose: Callback = None                  # (name: str)
+    freedrive: Callback = None                    # () bench-only
+    freedrive_release: Callback = None            # () bench-only
     # 도구 조작
     restart_bridge: Callback = None               # () bridge supervisor restart
     set_tool_enabled: Callback = None             # (enabled: bool) active tool only

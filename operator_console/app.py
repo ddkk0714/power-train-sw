@@ -3494,7 +3494,12 @@ class OpsPanel(Gtk.Frame):
         message = f"{action}: {status} · request {request_id}"
         if detail:
             message += f" · {detail}"
-        self._emit(message)
+        failed = (status == "OUTCOME_UNKNOWN"
+                  or status.startswith("FINAL_") and status != "FINAL_SUCCESS")
+        # Jog refresh/stop ACKs arrive several times a second while a key is held;
+        # logging each one rebuilds the event list and starves the jog refresh.
+        if failed or action not in ("robot_arm_jog", "robot_arm_jog_stop"):
+            self._emit(message)
         self._latest_ack_text = ack_korean(status, detail)
         self._refresh_status_line()
         sink = getattr(self, '_external_ack_sink', None)
@@ -4263,6 +4268,9 @@ class OperatorConsole(Gtk.Window):
                         "robot_arm_lock_command", "robot_arm_lock_stop",
                         "robot_arm_jog", "robot_arm_jog_stop",
                         "robot_arm_stop", "robot_arm_resume_hold",
+                        "robot_arm_pose_save", "robot_arm_pose_move",
+                        "robot_arm_pose_delete", "robot_arm_home",
+                        "robot_arm_freedrive", "robot_arm_freedrive_release",
                         ACTION_MODE_REQUEST, ACTION_TOOL_CHANGE,
                         ACTION_TOOL_COMMAND,
                         ACTION_TOOL_ENABLE,
@@ -4279,6 +4287,8 @@ class OperatorConsole(Gtk.Window):
                 request_id=rid, action=action, status=status, detail=detail)))
         arm_callbacks = self._arm_ops_adapter.callbacks()
         self._arm_manual_tab = ArmManualTab(arm_callbacks)
+        # Keyboard teleop keys only act while the manual tab is shown.
+        self._arm_manual_tab.attach_keys(self)
         self._arm_calibration_tab = ArmCalibrationTab(arm_callbacks)
         stack.add_titled(
             self._arm_manual_tab.widget,
@@ -4349,6 +4359,8 @@ class OperatorConsole(Gtk.Window):
     def _report_arm_command_outcome(self, outcome: object) -> None:
         """Surface arm policy refusal/submission in the existing event drawer."""
         if getattr(outcome, "accepted", False):
+            if getattr(outcome, "action", "") in ("robot_arm_jog", "robot_arm_jog_stop"):
+                return  # high-rate hold traffic; failures are still logged below
             self._add_event(
                 "ARM OPS",
                 f"{getattr(outcome, 'action', 'arm')}: 전송 대기 "

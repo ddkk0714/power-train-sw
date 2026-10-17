@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 
 from .arm_ui import contracts as C
@@ -169,8 +170,13 @@ class ArmUiTelemetryBinding:
                 and tool.get('read_only') is False
                 and tool.get('emergency_stop') is False
                 and any(axis.index == 5 for axis in axes)
-                and lock.get('state') == 'LOCKED' and lock.get('torque') == 1):
+                and (os.environ.get('ARM_LOCAL_WRIST_IGNORE_LOCK') == '1'
+                     or (lock.get('state') == 'LOCKED' and lock.get('torque') == 1))):
             capabilities.add(C.CAP_TELEOP_JOG)
+        pose_list = tool.get('poses') if local_wrist else None
+        if (isinstance(pose_list, list) and link_state == C.LINK_LIVE and ops_link_ready
+                and tool.get('read_only') is False and tool.get('emergency_stop') is False):
+            capabilities.add(C.CAP_TELEOP_POSE)
         return C.ArmUiState(
             coupling_lock=lock,
             link=C.SourceLink(state=link_state, age_s=receive_age),
@@ -181,7 +187,8 @@ class ArmUiTelemetryBinding:
                 granted_mode="MANUAL" if granted else "",
                 status=C.AUTHORITY_GRANTED if granted else C.AUTHORITY_UNKNOWN,
             ),
-            teleop=C.TeleopState(axes=axes, selected_axis=5 if local_wrist else None),
+            teleop=C.TeleopState(axes=axes, selected_axis=5 if local_wrist else None,
+                                 poses=tuple(pose_list or ())),
             diagnostics=diagnostics,
             capabilities=frozenset(capabilities),
             block_reasons=tuple(block_reasons),
