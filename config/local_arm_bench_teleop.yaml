@@ -14,7 +14,7 @@
     toolchanger_zero_state: LOCKED
     centers: ["arm_joint_5:2669"]
     arm_profile_velocity: 50
-    profile_acceleration: 25
+    profile_acceleration: 8
     gripper_auto_recover: false
     auto_tool_detection: true
     keyboard_shortcuts_enabled: false

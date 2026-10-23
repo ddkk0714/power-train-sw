@@ -3086,7 +3086,22 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         dxl_id = getattr(self, '_local_jog_id', 16)
         if dxl_id in self.active_ids and not self.mock_mode and not self.read_only:
             position = self._read_register(dxl_id, 132, 4, 'wrist stop position', signed=True)
-            self._write_register(dxl_id, 116, 4, position & 0xffffffff, 'wrist hold')
+            stop = position
+            velocity = self._read_register(dxl_id, 128, 4, 'wrist stop velocity', signed=True)
+            if velocity:
+                # A goal at the present position makes a moving servo overshoot and
+                # snap back.  Stop where the Profile Acceleration ramp ends instead,
+                # never past the already limit-checked jog goal.
+                accel = self._read_register(dxl_id, 108, 4, 'wrist stop acceleration')
+                goal = self._read_register(dxl_id, 116, 4, 'wrist stop goal', signed=True)
+                if accel > 0 and (goal - position) * velocity > 0:
+                    # Units: velocity 0.229 rev/min, acceleration 214.577 rev/min^2.
+                    ticks = round((velocity * .229) ** 2 / (2 * accel * 214.577) * 4096)
+                    stop = (min(position + ticks, goal) if velocity > 0
+                            else max(position - ticks, goal))
+                elif accel > 0:
+                    stop = goal if (goal - position) * velocity < 0 else position
+            self._write_register(dxl_id, 116, 4, stop & 0xffffffff, 'wrist hold')
         self._wrist_jog.deadline = None
 
     def _local_wrist_command(self, msg):

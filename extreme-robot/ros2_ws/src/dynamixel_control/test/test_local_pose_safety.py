@@ -138,6 +138,32 @@ def test_keyboard_speed_scales_only_next_bounded_jog_and_keeps_deadman(level):
     assert b.registers[11][64] == 1
 
 
+def test_jog_release_decelerates_to_a_stop_ahead_instead_of_snapping_back():
+    b = bridge()
+    regs = b.registers[11]
+    regs[132], regs[116], regs[128], regs[108] = 2000, 2300, 50, 25
+    b._local_jog_id = 11
+    b._hold_local_wrist()
+    # 50 x 0.229 rev/min under 25 x 214.577 rev/min^2 stops in about 50 ticks.
+    stop = 2000 + round((50 * .229) ** 2 / (2 * 25 * 214.577) * 4096)
+    assert regs[116] == stop and 2000 < stop < 2300
+
+
+def test_jog_release_never_stops_beyond_the_commanded_goal_or_reverses():
+    b = bridge()
+    regs = b.registers[11]
+    regs[132], regs[116], regs[128], regs[108] = 2000, 2010, 50, 25
+    b._local_jog_id = 11
+    b._hold_local_wrist()
+    assert regs[116] == 2010
+    regs[132], regs[116], regs[128] = 2000, 1990, -50
+    b._hold_local_wrist()
+    assert regs[116] == 1990
+    regs[132], regs[116], regs[128], regs[108] = 2000, 2300, 50, 0
+    b._hold_local_wrist()
+    assert regs[116] == 2000  # acceleration 0 means no profile: hold in place
+
+
 def test_delayed_pose_blocks_lock_without_interrupting_pose():
     b = bridge()
     send(b, 'HOME')

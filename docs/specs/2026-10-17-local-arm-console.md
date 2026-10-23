@@ -38,7 +38,7 @@ Qt `robot_manual_gui`는 이번 조작 화면으로 사용하지 않는다.
 | 브리지 | `local_jog_all_axes` | true | 조그 대상 1~5축, 이미 토크 ON인 팔 서보를 재시작 시 현재 위치로 인수 |
 | 브리지 | `local_wrist_lock_gate` | false | 조그·자세가 볼락 준비 상태를 요구하지 않음 |
 | 브리지 | `local_jog_step_rad` | 0.14 | 갱신(0.2초)당 관절 이동량 ≈ 0.7 rad/s (원 텔레옵 `jog_velocity_rad_s`) |
-| 브리지 | `arm_profile_velocity` / `profile_acceleration` | 50 / 25 | 원 텔레옵 `position_node` 기본값 |
+| 브리지 | `arm_profile_velocity` / `profile_acceleration` | 50 / 8 | 속도는 원 텔레옵 기본값. 가속도는 2026-10-23 실물 확인으로 25→8(5단 정지 약 0.13→0.4초, 정지 흔들림 제거). 조그 해제는 이 감속 정지 거리만큼 앞(명령 목표 이내)에 멈춘다 |
 | 브리지 | `local_jog_trip_threshold` | 500 | 전류 트립 문턱(Present Current/Load raw) |
 | 브리지 | `local_poses_file` | `/session/arm_poses.json` | 자세 저장 파일(teleop_core 와 같은 `{이름: {관절: rad}}`) |
 | 브리지 | `local_pose_profile_velocity` | 20 | 축별 속도 미지정 시 자세 이동 프로파일 |
