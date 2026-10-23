@@ -14,6 +14,7 @@ from operator_console.arm_ops import policy as P
 
 
 ALL_CAPS = frozenset({
+    P.CAP_TOOL_JOG, P.CAP_INDIVIDUAL_TARGETS, 'tool_enable',
     P.CAP_COUPLING_LOCK, P.CAP_TOOL_CHANGE, P.CAP_CONTROL_MODE, P.CAP_TELEOP_JOG, P.CAP_TELEOP_POSE,
     P.CAP_GRIPPER_COMMAND, P.CAP_DUAL_SYNC, P.CAP_ARM_CALIBRATION,
     P.CAP_TOOL_CALIBRATION, P.CAP_DUAL_TOOL_CALIBRATION,
@@ -329,6 +330,7 @@ def test_capability_tokens_match_the_arm_ui_contract_exactly():
     assert P.CAP_TOOL_CALIBRATION == ui.CAP_TOOL_CALIBRATION
     assert P.CAP_DUAL_TOOL_CALIBRATION == ui.CAP_DUAL_TOOL_CALIBRATION
     assert ALL_CAPS == frozenset({
+        ui.CAP_TOOL_JOG, ui.CAP_INDIVIDUAL_TARGETS, ui.CAP_TOOL_ENABLE,
         ui.CAP_COUPLING_LOCK, ui.CAP_TOOL_CHANGE, ui.CAP_CONTROL_MODE, ui.CAP_TELEOP_JOG,
         ui.CAP_TELEOP_POSE, ui.CAP_GRIPPER_COMMAND, ui.CAP_DUAL_SYNC,
         ui.CAP_ARM_CALIBRATION, ui.CAP_TOOL_CALIBRATION,
@@ -350,7 +352,7 @@ def test_tool_targets_match_the_arm_ui_contract():
         ui.TARGET_SINGLE, ui.TARGET_LEFT, ui.TARGET_RIGHT, ui.TARGET_BOTH,
     })
     assert K.TOOL_COMMANDS == frozenset({
-        ui.COMMAND_OPEN, ui.COMMAND_CLOSE, ui.COMMAND_STOP,
+        ui.COMMAND_OPEN, ui.COMMAND_CLOSE, ui.COMMAND_STOP, ui.COMMAND_LEFT, ui.COMMAND_RIGHT,
     })
 
 

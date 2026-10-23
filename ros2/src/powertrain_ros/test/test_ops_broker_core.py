@@ -32,6 +32,28 @@ def test_ops_state_estop_cause_defaults_are_empty_strings():
     assert state.estop_detail == ""
 
 
+def test_tool_jog_deadline_uses_authenticated_clock_offset():
+    clock = Clock()
+    clock.now = 1000.0
+    core, _, _ = _core(clock=clock)
+    clock.now = 1000.3
+    decision = core.handle_line('c1', oc.ROLE_CONSOLE, _req('tok-console',
+        'robot_arm_tool_jog', params={'expires_at_s': 100.6}))
+    assert decision.execute is not None
+    assert abs(decision.execute.deadline_s - 1000.6) < 1e-8
+
+
+def test_late_tool_jog_is_rejected_even_with_a_fresh_envelope():
+    clock = Clock()
+    clock.now = 1000.0
+    core, _, _ = _core(clock=clock)
+    clock.now = 1000.8
+    decision = core.handle_line('c1', oc.ROLE_CONSOLE, _req('tok-console',
+        'robot_arm_tool_jog', stamp_s=100.8, params={'expires_at_s': 100.6}))
+    assert decision.execute is None
+    assert 'tool jog expired' in json.loads(decision.response)['detail']
+
+
 def _core(clock=None, state=None, **core_kwargs):
     clock = clock or Clock()
     holder = {"state": state or _state()}

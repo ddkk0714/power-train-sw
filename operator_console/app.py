@@ -15,6 +15,7 @@ from pathlib import Path
 import signal
 import sys
 import time
+from dataclasses import replace
 from collections.abc import Callable
 
 from operator_console.pipelines import pipeline_description, srt_uri
@@ -29,6 +30,7 @@ from operator_console.arm_ui import (
     ArmManualTab,
 )
 from operator_console.arm_ui_binding import ArmUiTelemetryBinding
+from operator_console.arm_pad import ArmPadControl
 from operator_console.arm_ops import (
     ArmCommandSession,
     ArmOpsCallbackAdapter,
@@ -3361,7 +3363,8 @@ class OpsPanel(Gtk.Frame):
             expected_state_revision=expected_state_revision,
         )
         self._pending_requests[request_id] = str(action)
-        self._emit(f"{action}: submitted · request {request_id}")
+        if action not in ('robot_arm_jog', 'robot_arm_jog_stop', 'robot_arm_tool_jog', 'robot_arm_tool_jog_stop'):
+            self._emit(f"{action}: submitted · request {request_id}")
         return request_id
 
     def _on_cancel_clicked(self, _button: Gtk.Button) -> None:
@@ -3498,7 +3501,7 @@ class OpsPanel(Gtk.Frame):
                   or status.startswith("FINAL_") and status != "FINAL_SUCCESS")
         # Jog refresh/stop ACKs arrive several times a second while a key is held;
         # logging each one rebuilds the event list and starves the jog refresh.
-        if failed or action not in ("robot_arm_jog", "robot_arm_jog_stop"):
+        if failed or action not in ("robot_arm_jog", "robot_arm_jog_stop", "robot_arm_tool_jog", "robot_arm_tool_jog_stop"):
             self._emit(message)
         self._latest_ack_text = ack_korean(status, detail)
         self._refresh_status_line()
@@ -4271,8 +4274,9 @@ class OperatorConsole(Gtk.Window):
                         "robot_arm_pose_save", "robot_arm_pose_move",
                         "robot_arm_pose_delete", "robot_arm_home",
                         "robot_arm_freedrive", "robot_arm_freedrive_release",
-                        ACTION_MODE_REQUEST, ACTION_TOOL_CHANGE,
+                        ACTION_MODE_REQUEST, "robot_arm_mode_release", ACTION_TOOL_CHANGE,
                         ACTION_TOOL_COMMAND,
+                        "robot_arm_tool_jog", "robot_arm_tool_jog_stop",
                         ACTION_TOOL_ENABLE,
                         ACTION_CALIBRATION, ACTION_CALIBRATION_JOG,
                         ACTION_CALIBRATION_JOG_STOP,
@@ -4287,6 +4291,17 @@ class OperatorConsole(Gtk.Window):
                 request_id=rid, action=action, status=status, detail=detail)))
         arm_callbacks = self._arm_ops_adapter.callbacks()
         self._arm_manual_tab = ArmManualTab(arm_callbacks)
+        self._arm_pad_control = ArmPadControl(self._arm_ops_adapter.session)
+        self._arm_pad_reader = None
+        self._arm_pad_toggle = Gtk.CheckButton(label='패드로 현재 도구 조작 (차체 주행과 분리)')
+        self._arm_pad_note = Gtk.Label(label='Xbox X/B/A/Y · DualSense □/○/×/△')
+        self._arm_pad_note.set_xalign(0)
+        self._arm_pad_note.set_line_wrap(True)
+        self._arm_manual_tab._page.pack_start(self._arm_pad_toggle, False, False, 0)
+        self._arm_manual_tab._page.pack_start(self._arm_pad_note, False, False, 0)
+        self._arm_manual_tab._page.reorder_child(self._arm_pad_toggle, 2)
+        self._arm_manual_tab._page.reorder_child(self._arm_pad_note, 3)
+        self._arm_pad_toggle.connect('toggled', self._on_arm_pad_toggled)
         # Keyboard teleop keys only act while the manual tab is shown.
         self._arm_manual_tab.attach_keys(self)
         self._arm_calibration_tab = ArmCalibrationTab(arm_callbacks)
@@ -4359,7 +4374,7 @@ class OperatorConsole(Gtk.Window):
     def _report_arm_command_outcome(self, outcome: object) -> None:
         """Surface arm policy refusal/submission in the existing event drawer."""
         if getattr(outcome, "accepted", False):
-            if getattr(outcome, "action", "") in ("robot_arm_jog", "robot_arm_jog_stop"):
+            if getattr(outcome, "action", "") in ("robot_arm_jog", "robot_arm_jog_stop", "robot_arm_tool_jog", "robot_arm_tool_jog_stop"):
                 return  # high-rate hold traffic; failures are still logged below
             self._add_event(
                 "ARM OPS",
@@ -4394,6 +4409,36 @@ class OperatorConsole(Gtk.Window):
         self._ops_panel.cancel_confirmation()
         self._ops_settings_window.hide()
         return True
+
+    def _on_arm_pad_toggled(self, toggle):
+        enabled = toggle.get_active()
+        if self._operation_runtime is not None:
+            if not self._operation_runtime.set_arm_control(enabled):
+                toggle.set_active(False)
+                self._arm_pad_note.set_text('차체 주행을 해제한 뒤 팔 패드 조작을 켜세요')
+                return
+        else:
+            if enabled and self._arm_pad_reader is None:
+                from operator_console.operation_runtime import ControllerSupervisor
+                self._arm_pad_reader = ControllerSupervisor(
+                    os.environ.get('ARM_CONTROLLER_PYTHON', sys.executable))
+            if self._arm_pad_reader is not None:
+                self._arm_pad_reader.set_arm_control(enabled)
+        if not enabled:
+            self._arm_pad_control.cancel()
+            self._arm_ops_adapter.pump()
+
+    def _refresh_arm_pad(self):
+        status = {}
+        if self._operation_runtime is not None:
+            status = self._operation_runtime.snapshot().get('pad', {})
+        elif self._arm_pad_reader is not None:
+            status = self._arm_pad_reader.snapshot()
+        self._arm_pad_control.update(status,
+            enabled=self._arm_pad_toggle.get_active(),
+            focused=(self.get_property('is-active')
+                     and self._stack.get_visible_child_name() == ARM_MANUAL_TAB_NAME))
+        self._arm_pad_note.set_text(self._arm_pad_control.detail)
 
     def _refresh_operation(self) -> bool:
         runtime = self._operation_runtime
@@ -5479,7 +5524,12 @@ class OperatorConsole(Gtk.Window):
             # MANUAL.  Developer mode requests that mode once; it does not
             # alter the arm-side FSM safety check.
             self._arm_ops_adapter.callbacks().request_control_mode("MANUAL")
+        self._refresh_arm_pad()
         self._arm_ops_adapter.pump()
+        if 'teleop_jog' in arm_ui_state.capabilities:
+            arm_ui_state = replace(arm_ui_state, teleop=replace(arm_ui_state.teleop,
+                speed_level=self._arm_ops_adapter.session.speed_level,
+                speed_ratio=self._arm_ops_adapter.session.speed_level / 10))
         self._arm_manual_tab.update_state(arm_ui_state)
         self._arm_calibration_tab.update_state(arm_ui_state)
         self._l515.set_rover_component_states(
@@ -5543,7 +5593,7 @@ class OperatorConsole(Gtk.Window):
             "arm_lock_state": arm_ui_state.coupling_lock.get("state"),
             "arm_lock_motion_disabled": not any(
                 widget.get_sensitive() for key, widget
-                in self._arm_manual_tab.coupling_lock.buttons.items() if key != "stop"
+                in self._arm_manual_tab.coupling_lock.buttons.items() if key not in ("stop", "disable")
             ),
             "arm_ui_detected_tool": arm_ui_state.detected_tool.kind,
             "arm_ui_actions_disabled": not any(
@@ -5597,6 +5647,9 @@ class OperatorConsole(Gtk.Window):
     def _on_destroy(self, *_args: object) -> None:
         self._ops_panel.cancel_confirmation()
         self._arm_ops_adapter.blur()
+        self._arm_pad_control.cancel()
+        if self._arm_pad_reader is not None:
+            self._arm_pad_reader.close()
         self._arm_ops_adapter.pump()
         self._arm_manual_tab.dispose()
         self._arm_calibration_tab.dispose()

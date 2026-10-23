@@ -38,6 +38,7 @@ from dynamixel_control.dual_calibration_session import (
     DualCalibrationSession, DualCalibrationError)
 from dynamixel_control.tool_fsm.base import ToolState
 from dynamixel_control.local_wrist_jog import WristJogLease
+from dynamixel_control.tool_manual_control import ToolManualControl
 from dynamixel_control.toolchanger_lock import ToolchangerLock, LockError
 from dynamixel_control.toolchanger_sequence import ToolchangerSequence
 from dynamixel_control.tool_change_bridge import ToolChangeBridge
@@ -1004,6 +1005,11 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             String, '/tool/manual_recovery_jog',
             self.manual_recovery_callback, 10,
             callback_group=self._command_group)
+        self.tool_manual_control = ToolManualControl(self,
+            message_clock=lambda: self.get_clock().now().nanoseconds / 1e9)
+        self.create_subscription(String, '/tool/manual_command', self._tool_manual_command, 10,
+                                 callback_group=self._command_group)
+        self.create_timer(0.05, self._tool_manual_watch, callback_group=self._command_group)
         self.dual_calibration_command_sub = self.create_subscription(
             String, '/tool/dual_calibration_command',
             self.dual_calibration_command_callback, 10,
@@ -1233,7 +1239,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             self.get_logger().warn("torque_request 무시 — read_only 모드는 레지스터를 쓰지 않습니다")
             return
 
-        if self.control_scope == 'END_EFFECTOR_ONLY':
+        if (self.control_scope == 'END_EFFECTOR_ONLY'
+                or any(d.label.startswith('tool_context:') for d in msg.layout.dim)):
             expected_tag = f'tool_context:{self._tool_context_generation}'
             tags = [dimension.label for dimension in msg.layout.dim]
             if expected_tag not in tags:
@@ -1418,7 +1425,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         if data[0] not in (0, 1) or data[1:] != self.tool_ids or not self.tool_ids:
             self.get_logger().warn('Torque request rejected: IDs differ from active tool')
             return
-        if (data[0] and (self._tool_preparation_state != 'READY'
+        if (data[0] and self.control_scope == 'END_EFFECTOR_ONLY' and (self._tool_preparation_state != 'READY'
                          or self._tool_prepared_generation
                          != self._tool_context_generation)):
             self.get_logger().warn(
@@ -1612,6 +1619,20 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                 f'COMMAND RESULT command={command} tool={self.tool_type} '
                 f'fsm={type(self.tool_fsm).__name__} ids={self.tool_ids} '
                 f'accepted=false reason={exc}')
+
+    def _tool_manual_command(self, msg):
+        with self._bus_lock:
+            try:
+                self.tool_manual_control.handle(json.loads(msg.data))
+            except Exception as exc:
+                self.get_logger().warn(f'manual tool request rejected: {exc}')
+
+    def _tool_manual_watch(self):
+        with self._bus_lock:
+            try:
+                self.tool_manual_control.poll()
+            except Exception as exc:
+                self._stop_tool(f'manual tool hold failed: {exc}')
 
     def _relative_dual_jog(self, direction, step_ticks):
         """Dispatch one profile-bounded pair-relative bench jog."""
@@ -2348,6 +2369,26 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         self._validate_dual_motion_request(positions, require_range=False)
         self._dispatch_dual_sync_targets(positions)
 
+    def hold_tool_position(self, ids):
+        """A soft stop never needs a motion grant or changes the torque state."""
+        if self.read_only or not set(ids) <= set(self.tool_ids):
+            raise RuntimeError('invalid tool hold target')
+        held = False
+        with self._bus_lock:
+            for dxl_id in ids:
+                if self.read_torque(dxl_id) != 1:
+                    continue
+                position = self.read_position(dxl_id)
+                if position is None:
+                    raise RuntimeError(f'ID{dxl_id} hold feedback unavailable')
+                if self.mock_mode:
+                    self._tool_samples[dxl_id]['position'] = position
+                else:
+                    self._write_register(dxl_id, ADDR_GOAL_POSITION, 4,
+                                         int(position) & 0xffffffff, 'manual tool hold')
+                held = True
+        return held
+
     def set_torque(self, dxl_id, enabled):
         if enabled and not self._lock_ready():
             raise LockError('coupling lock not ready')
@@ -2753,6 +2794,14 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             return False
         if self.control_scope == 'END_EFFECTOR_ONLY':
             return True
+        if self.control_scope == 'FULL_ROBOT' and self.control_mode == 'MANUAL':
+            if self._arm_fsm_state and self._arm_fsm_state not in ToolManager.SAFE_CHANGE_STATES:
+                return False
+            try:
+                self._require_manual_lock_arm_stopped()
+                return True
+            except LockError:
+                return False
         return self._arm_fsm_state in ToolManager.SAFE_CHANGE_STATES
 
     def _poll_physical_tool(self):
@@ -2847,7 +2896,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             self._tool_change_error = ''
             try:
                 if (detected == self.tool_type
-                        and self.control_scope != 'END_EFFECTOR_ONLY'):
+                        and self.control_scope == 'TOOL_CHANGE'):
                     # A same-type reattachment is observation-only.  Restore
                     # registration/FSM validation but never re-enable torque.
                     self.tool_discovered = self._discover_tool_ids()
@@ -2915,6 +2964,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
 
     def _stop_tool(self, reason):
         """Best-effort stop for emergency, detach, cancellation, and shutdown."""
+        manual = getattr(self, 'tool_manual_control', None)
+        if manual is not None:
+            manual.leases.clear()
         if self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'):
             self.tool_motion_allowed = False
             self.cleaning_running = False
@@ -3091,6 +3143,11 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                 ratio = self._joint_gear_ratio(joint)
                 step = (round(self.local_jog_step_rad * 4096 / (2 * math.pi) * ratio)
                         if bench and self.local_jog_step_rad > 0 else round(12 * ratio))
+                if bench:
+                    self._local_speed_level = int(request.get('speed_level', 5))
+                    if not 0 <= self._local_speed_level <= 10:
+                        raise ValueError('local jog speed level must be 0..10')
+                    step = round(step * self._local_speed_level / 5)
                 target = position + direction * JOINT_CONFIG[joint]['direction'] * step
                 if limits_on:
                     center = self._joint_center(joint)
@@ -3156,6 +3213,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
 
     def _local_pose_command(self, msg):
         with self._bus_lock:
+            pose_started = False
             try:
                 request = json.loads(msg.data)
                 command = request.get('command')
@@ -3188,6 +3246,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                     if (self.control_mode != 'MANUAL' or self.emergency_stop_active
                             or self._wrist_jog.deadline is not None):
                         raise RuntimeError('pose move needs MANUAL, no E-stop and no active jog')
+                    if getattr(getattr(self, 'toolchanger', None), 'target', None) is not None:
+                        raise RuntimeError('wait for coupling lock motion before moving a pose')
                     limits_on = request.get('limits') is not False
                     if limits_on:
                         # A silently clamped pose is a different pose: refuse it whole.
@@ -3199,6 +3259,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                                 'turn the joint-limit switch OFF to move there')
                     ids, pending, starts = [], [], {}
                     now = time.monotonic()
+                    self._pose_move = {'ids': ids, 'trip': request.get('trip') is not False,
+                                       'pending': pending, 'starts': starts}
+                    pose_started = True
                     for joint, rad in pose.items():
                         config = JOINT_CONFIG.get(joint)
                         if (config is None or joint in self.LOCAL_POSE_EXCLUDED
@@ -3211,6 +3274,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                             tick = max(DXL_EXTENDED_MIN_TICK, min(DXL_EXTENDED_MAX_TICK, tick))
                         else:
                             tick = max(DXL_MINIMUM_POSITION_VALUE, min(DXL_MAXIMUM_POSITION_VALUE, tick))
+                        ids.append(config['id'])
                         self._write_register(config['id'], 112, 4,
                                              self._pose_profile(joint, config['id']), 'pose profile')
                         index = int(joint.rsplit('_', 1)[1]) - 1
@@ -3221,21 +3285,26 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                         else:
                             self._write_register(config['id'], 116, 4, tick & 0xffffffff, 'pose goal')
                             starts[config['id']] = now
-                        ids.append(config['id'])
-                    self._pose_move = {'ids': ids, 'trip': request.get('trip') is not False,
-                                       'pending': pending, 'starts': starts}
                 else:
                     raise ValueError(f'unknown pose command {command!r}')
                 self.get_logger().info(f'local pose {command} {name!r}')
             except Exception as exc:
-                self._hold_local_pose()
+                # A rejected request must not interrupt an already running pose.
+                if pose_started:
+                    self._hold_local_pose()
                 self.get_logger().warn(f'local pose rejected: {exc}')
 
     def _local_freedrive(self, free):
         """Torque OFF (free) or hold-in-place ON for the saved-pose joints (1-4)."""
-        if free and (self.control_mode != 'MANUAL' or self.emergency_stop_active
-                     or self._wrist_jog.deadline is not None):
-            raise RuntimeError('freedrive needs MANUAL, no E-stop and no active jog')
+        def require_control():
+            if (self.read_only or self.control_scope != 'FULL_ROBOT'
+                    or self.control_mode != 'MANUAL' or self.emergency_stop_active
+                    or self._wrist_jog.deadline is not None):
+                raise RuntimeError('freedrive needs writable MANUAL FULL_ROBOT, no E-stop and no active jog')
+            if getattr(getattr(self, 'toolchanger', None), 'target', None) is not None:
+                raise RuntimeError('wait for coupling lock motion before freedrive')
+
+        require_control()
         self._hold_local_pose()
         for joint, config in JOINT_CONFIG.items():
             dxl_id = config['id']
@@ -3246,6 +3315,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                 self.torque_enabled_ids.discard(dxl_id)
             else:
                 position = self._read_register(dxl_id, 132, 4, 'freedrive hold', signed=True)
+                require_control()
                 self._write_register(dxl_id, 116, 4, position & 0xffffffff, 'freedrive goal')
                 self._write_register(dxl_id, 64, 1, 1, 'freedrive torque on')
                 self.torque_enabled_ids.add(dxl_id)
@@ -3295,6 +3365,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
 
     def _require_manual_lock_arm_stopped(self):
         """Manual coupling changes must not overlap an outstanding arm move."""
+        if getattr(self, '_pose_move', None) is not None:
+            raise LockError('wait for pose move to finish before moving the coupling lock')
         if getattr(getattr(self, '_wrist_jog', None), 'deadline', None) is not None:
             raise LockError('release wrist jog before moving the coupling lock')
         if self.mock_mode:
@@ -3425,7 +3497,21 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             self.get_logger().warn('Normal command rejected: TOOL_CHANGE owns the arm/tool')
             return None
         requested = str(msg.data).strip()
+        generation = None
+        if requested.startswith('{'):
+            try:
+                request = json.loads(requested)
+                requested = request['tool_type']
+                generation = request['tool_context_generation']
+                if type(generation) is not int:
+                    raise ValueError('invalid generation')
+            except (ValueError, TypeError, KeyError):
+                self.get_logger().warn('invalid tool change request')
+                return
         with self._tool_change_lock:
+            if generation is not None and generation != self._tool_context_generation:
+                self.get_logger().warn('Ignoring tool change from a replaced context')
+                return
             self._tool_change_pending = requested
             self._tool_change_error = ''
             try:
@@ -3438,8 +3524,6 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                 self._publish_tool_status_safely()
 
     def _switch_tool_runtime(self, requested):
-        if self.control_scope not in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'):
-            return self._switch_tool_runtime_impl(requested)
         # EEO context replacement uses short individual bus transactions.
         # TOOL_CHANGE callers additionally serialize profile retirement with
         # arm feedback so the SDK never reads a half-replaced ID list.
@@ -3492,10 +3576,6 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         if requested not in supported:
             raise ToolProfileError(
                 f'runtime switching supports only {supported}, got {requested!r}')
-        if (requested == self.tool_type
-                and self.control_scope not in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE')):
-            self._revalidate_current_tool()
-            return
         if self.emergency_stop_active or self.tool_detached:
             raise RuntimeError('runtime tool change blocked by emergency stop or detached latch')
         if self._gripper_goal_active:
@@ -3543,10 +3623,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         # Stop and unregister the old tool before changing the allowlist.
         old_ids = list(self.tool_ids)
         self._release_current_tool_for_switch(requested)
-        if self.control_scope in ('END_EFFECTOR_ONLY', 'TOOL_CHANGE'):
-            self._tool_context_generation += 1
-            self._clear_runtime_sessions()
-            self.tool_fsm = None
+        self._tool_context_generation += 1
+        self._clear_runtime_sessions()
+        self.tool_fsm = None
         # Dynamixel SDK GroupSyncRead uses removeParam(), not delParam().
         # The old spelling was swallowed above, leaving absent cleaner ID2
         # in every subsequent dual SyncRead packet and tripping feedback loss
@@ -3723,6 +3802,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             'control_scope': self.control_scope,
             'tool_type': self.tool_type,
             'tool_context_generation': self._tool_context_generation,
+            'manual_tool_capabilities': ['tool_jog', 'individual_targets'] + (
+                ['dual_sync'] if self.tool_type == 'dual_motor_gripper' else []),
             'fsm_class': type(self.tool_fsm).__name__ if self.tool_fsm else None,
             'tool_profile': self.tool_profile,
             'backend': self.tool_profile.get('backend', 'invalid'),
@@ -3750,6 +3831,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             'manual_coupling_lock': self.manual_coupling_lock,
             'poses': (sorted(self._local_poses)
                       if self.local_jog_all_axes and self.local_poses_file else None),
+            'local_jog_speed_level': getattr(self, '_local_speed_level', 5),
             'read_only': self.read_only, 'mock_mode': self.mock_mode,
             'bridge_connected': True,
             'u2d2_connected': self.port_connected,

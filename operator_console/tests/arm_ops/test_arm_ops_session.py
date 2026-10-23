@@ -131,6 +131,7 @@ def test_registered_actions_can_be_read_off_the_real_ops_contract_module():
             K.ACTION_JOG, K.ACTION_JOG_STOP, K.ACTION_STOP, K.ACTION_RESUME_HOLD,
             K.ACTION_HOME, K.ACTION_POSE_SAVE, K.ACTION_POSE_MOVE, K.ACTION_POSE_DELETE,
             K.ACTION_FREEDRIVE, K.ACTION_FREEDRIVE_RELEASE,
+            K.ACTION_TOOL_JOG, K.ACTION_TOOL_JOG_STOP, K.ACTION_MODE_RELEASE,
         })
 
 

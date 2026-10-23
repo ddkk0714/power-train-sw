@@ -150,10 +150,8 @@ class ArmOpsCallbackAdapter:
                 lambda axis, direction: session.press_axis_jog(axis, direction)
             ),
             jog_stop=self._wrap(session.release_axis_jog),
-            # Speed is carried on the next jog refresh rather than sent as its
-            # own command; until the arm side confirms how speed is expressed
-            # there is nothing honest to send.  See BACKEND_REQUIREMENTS.
-            change_speed=None,
+            # A level change applies to the next bounded bench jog; it moves no motor itself.
+            change_speed=self._wrap(session.change_speed),
             stop_motion=self._wrap(session.stop_motion),
             set_bench_flag=lambda key, on: K.BENCH_JOG_FLAGS.__setitem__(key, bool(on)),
             resume_hold=self._wrap(session.resume_hold),
@@ -185,11 +183,8 @@ class ArmOpsCallbackAdapter:
         )
 
 
-UNBOUND_CALLBACKS = ("select_axis", "change_speed")
+UNBOUND_CALLBACKS = ("select_axis",)
 """Callbacks this adapter deliberately leaves ``None``.
 
-``select_axis`` is a view change with no ops meaning.  ``change_speed`` has no
-confirmed arm-side representation yet, and binding it to a guess would put a
-command on the wire whose meaning nobody agreed to.  Both stay disabled in the
-UI as a result, which is the honest rendering of "not connected yet".
+``select_axis`` is a view change with no ops meaning outside the local bench.
 """

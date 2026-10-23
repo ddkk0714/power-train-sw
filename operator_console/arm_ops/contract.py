@@ -308,6 +308,7 @@ ACTION_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         _spec("direction", _in(DIRECTIONS)),
         *_TOOL_IDENTITY,
         *_JOG_LIFETIME,
+        _spec("ttl_s", lambda v: type(v) in (int, float) and 0 < v <= 0.6, required=False),
     ),
     ACTION_TOOL_JOG_STOP: (
         _spec("target", _in(TOOL_TARGETS)),

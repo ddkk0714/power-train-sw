@@ -16,7 +16,7 @@
     arm_profile_velocity: 50
     profile_acceleration: 25
     gripper_auto_recover: false
-    auto_tool_detection: false
+    auto_tool_detection: true
     keyboard_shortcuts_enabled: false
     local_wrist_lock_gate: false
     local_jog_all_axes: true

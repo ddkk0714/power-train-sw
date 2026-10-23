@@ -80,6 +80,37 @@ class FakeSocket:
         self.closed = True
 
 
+def test_arm_mode_neutralizes_chassis_and_requires_release_before_return():
+    clock = FakeClock()
+    pad = FakePadSource(ClientInput(deadman=True, left_x=.8, estop_edge=True))
+    reader = FakeCommandReader(controller.CommandBatch(
+        ({'op': 'arm_control', 'enabled': True},), False, ()))
+    process = controller.ControllerProcess(command_reader=reader, pad_source=pad,
+        status_writer=lambda _: None, clock=clock, monotonic_ns=lambda: 0)
+    sock = FakeSocket()
+    process._socket, process._session_id = sock, 'test'
+    process.tick()
+    frame = json.loads(sock.sent[-1])
+    assert frame['deadman'] is False and frame['axes']['left_x'] == 0 and frame['estop_edge'] is False
+    reader.batches.append(controller.CommandBatch(({'op': 'arm_control', 'enabled': False},), False, ()))
+    process.tick()
+    assert json.loads(sock.sent[-1])['deadman'] is False
+    pad.sample = ClientInput()
+    process.tick()
+    pad.sample = ClientInput(deadman=True, left_x=.8)
+    process.tick()
+    assert json.loads(sock.sent[-1])['deadman'] is True
+    process.close()
+
+
+def test_face_button_mappings_are_explicit_for_xbox_and_dualsense():
+    assert controller.tool_button_mapping('Xbox Wireless Controller') == {
+        'open': 2, 'close': 1, 'stop': 0, 'disable': 3}
+    assert controller.tool_button_mapping('Xbox 360 Controller')['open'] == 2
+    assert controller.tool_button_mapping('DualSense Wireless Controller')['open'] == 3
+    assert controller.tool_button_mapping('unidentified pad') == {}
+
+
 def _neutral_sample(**changes):
     values = {
         "requested_mode": "DRIVE",

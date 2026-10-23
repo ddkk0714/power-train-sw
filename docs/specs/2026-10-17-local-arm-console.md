@@ -76,6 +76,13 @@ Qt `robot_manual_gui`는 이번 조작 화면으로 사용하지 않는다.
   - 도착(±20 tick) 또는 홀드 시 조그 프로파일로 되돌린다.
 - `자세 자유 지정`: 1~4축 토크 OFF(손으로 자세 잡기). **팔을 받친 뒤 누른다.**
 - `자유 지정 해제`: 현재 위치를 목표로 맞춘 뒤 1~4축 토크 ON.
+- 자유 지정·해제는 쓰기 가능한 `MANUAL` + `FULL_ROBOT`, 비상정지 없음·조그 없음일 때만 허용한다.
+  해제 시 위치를 읽은 뒤에도 같은 조건을 재확인하고 토크를 켠다.
+- 예약·진행 중인 자세 이동이 있으면 볼락 조작 요청만 거부한다. 반대로 볼락 목표가 남아
+  실제 이동 중일 때는 새 자세 이동·자유 지정 요청만 거부하며, 완료 후 다시 요청할 수 있다.
+  거부된 요청으로 기존 자세 이동을 홀드하지 않는다. 이동 명령 쓰기 실패 시 홀드는 유지한다.
+- 2026-10-23 사용자 지시: 자세 이동에 볼락의 잠김·준비 상태 게이트는 추가하지 않는다.
+  위 동시 실행 방지는 볼락의 실제 이동 목표 유무만 검사하며 속도·가속도·축별 지연은 유지한다.
 - 거부 사유는 GUI가 아니라 브리지 로그(`local pose rejected/held`)에 남는다.
 
 ### 2.4 ops 액션 (브로커 `ops_contract.ACTIONS`, 콘솔 `registered_actions`)
@@ -106,9 +113,10 @@ Qt `robot_manual_gui`는 이번 조작 화면으로 사용하지 않는다.
 1. 세션에 `config/local_arm_bench_teleop.yaml`을 `session.yaml`로, 자세·볼락 파일을
    `arm_poses.json`·`lock_points.json`으로 복사하고 `ops_console.token`(0600)을 만든다.
 2. `extreme-robot-ros2` 컨테이너를 `--network host --privileged -e ROS_DOMAIN_ID=78`,
-   `-v 세션:/session -v /dev:/dev -v 레포:/ws:ro`로 띄우고, `extreme-robot/ros2_ws/src`의
-   `robot_arm_msgs dynamixel_control robot_manual_gui`, 이어서 `ros2/src`의
-   `powertrain_msgs powertrain_ros`를 `/session`에 `--symlink-install`로 빌드한다.
+   `-v 세션:/session -v /dev:/dev -v 레포:/ws:ro`로 띄운다.
+   `/ws`에서 `bash scripts/build_arm_console_runtime.sh /session/runtime`을 실행하고
+   `source /session/runtime/install/setup.bash`를 마지막에 적용한다.
+   이 스크립트는 `extreme-robot`의 브리지와 공유 메시지·브로커만 빌드해 동명 패키지 혼입을 막는다.
 3. **`/sys/bus/usb-serial/devices/ttyUSB0/latency_timer`를 1로** 쓴다(재연결·재부팅 시 16으로 복귀).
 4. 브리지(`--params-file /session/session.yaml`, `PYTHONUNBUFFERED=1`) → ops 브로커
    (`port:=29001`, `ARM_LOCAL_ALL_AXES=1`; 19001은 운영 스택이 사용) → `arm_console_bridge`.
@@ -117,6 +125,37 @@ Qt `robot_manual_gui`는 이번 조작 화면으로 사용하지 않는다.
    Jetson 호스트에 gst-libav가 없으면 이미지의 `libgstlibav.so`와 누락 라이브러리를
    세션 하위 폴더에 두고 `GST_PLUGIN_PATH`/`LD_LIBRARY_PATH`로만 적용한다.
 6. GUI에서 `수동 제어 요청` → 조작. 브리지를 재시작하면 모드는 FSM으로 돌아간다.
+
+기존 세션의 영점·저장 자세·볼락 기록을 새 예제 파일로 덮어쓰지 않는다.
+현재 예제의 `auto_tool_detection: true`만 기존 `session.yaml`에도 반영했는지 확인한다.
+아래 팔 관절 키보드 조그는 기존과 같이 GUI와 브리지가 같은 Jetson 단조시계를 쓰는 경로다.
+도구 패드 조그는 인증 연결의 시각 오프셋과 수신측 기한을 사용하므로 별도 노트북에서도 사용할 수 있다.
+
+### 2.7 도구 자동 인식과 패드
+
+- 브로커와 `extreme-robot` 브리지를 같은 빌드로 갱신한다. 신규 `/tool/manual_command` 수신기가
+  없는 `ros2/src/dynamixel_control`의 구 설치본을 함께 source하면 안 된다.
+- 자동 감지는 기본 0.5초 주기·같은 결과 2회 확인이다. 단일 ID5, 듀얼 ID3/4, 클리너 ID2를 구분한다.
+  장착된 도구의 모터만 버스에 응답하는 배선이 전제다. 여러 도구가 동시에 연결된 구성에서
+  실제 장착 도구를 고르는 센서 기능은 없으며, 기계적 체결도 이 인식으로 확인할 수 없다.
+  FULL_ROBOT 수동 벤치에서는 팔 FSM이 없어도 실제 팔 정지·예약 이동 없음으로 교체를 허용한다.
+  FSM이 작업 중이라고 보고하거나 팔이 움직이면 전환을 기다리며 팔을 임의로 멈추지 않는다.
+- 교체 시 도구 세대를 갱신하고 이전 도구의 입력을 거부한다. 도구 종류·상태·동기 상태는 실제 수신값으로 표시한다.
+  자동 인식은 기계적 체결 확인이 아니며, 교체 뒤에는 `도구 토크 활성화`를 명시적으로 누른다.
+- `패드로 현재 도구 조작`을 켜고 버튼을 모두 놓은 뒤 조작한다. Xbox X/B는 열기/닫기,
+  클리너에서는 좌/우 회전이다. A는 현재 도구만 소프트 정지(토크 유지), Y는 도구 토크 해제다.
+  DualSense는 각각 □/○/×/△다. 팔 관절은 기존 키보드·저장 자세 조작을 유지한다.
+- 통합 운용 모드에서는 차체 주행 해제 뒤 팔 패드를 켤 수 있고, 켜져 있는 동안 차체 입력은 중립이다.
+  차체로 돌아갈 때도 버튼·스틱을 모두 놓아야 새 주행 입력이 전달된다.
+- 창 포커스·수동 탭·패드 연결·도구 세대를 잃으면 누름 입력을 끝내고, 복귀 후 새 누름부터 받는다.
+  도구 조그는 최대 0.6초 수신 기한을 갖는다. 클라이언트 대기·전송·ROS 큐 지연으로 기한이 지난 요청은 거부한다.
+  연결 단절이나 GUI 정지 시에는 수신측이 홀드하며 정상 해제 때 토크를 끄지 않는다.
+- 듀얼 좌·우 버튼은 각각 ID3/4만 지령한다. 동기 조작은 양쪽 검증된 끝점 비율로 이동한다.
+  키보드 조그 속도는 0~10단(기본 5단)이며 기존 스텝의 0~2배, 서보 속도·가속도 상한은 유지한다.
+- 패드 Python에는 `pygame`이 필요하다. 단독 GUI는 기본 GUI 인터프리터를 쓰며 필요하면
+  `ARM_CONTROLLER_PYTHON=/절대/경로/python3`로 지정한다. 인식하지 못하는 패드 이름에는 임의 매핑을 적용하지 않는다.
+- `ROS_DOMAIN_ID=77 ROS_LOCALHOST_ONLY=1 xvfb-run -a python3 scripts/verify_arm_console_tools_mock.py`
+  는 실제 설치 ROS·GTK·TCP·UDP와 가상 패드/모터의 운용 검증이다. 실물 장치는 열지 않는다.
 
 ## 3. 회귀 점검표 (GUI 갱신 때마다)
 

@@ -73,6 +73,8 @@ CAP_CONTROL_MODE = "control_mode"
 CAP_TELEOP_JOG = "teleop_jog"
 CAP_TELEOP_POSE = "teleop_pose"
 CAP_GRIPPER_COMMAND = "gripper_command"
+CAP_TOOL_JOG = 'tool_jog'
+CAP_INDIVIDUAL_TARGETS = 'individual_targets'
 CAP_TOOL_ENABLE = "tool_enable"
 CAP_BRIDGE_RESTART = "bridge_restart"
 CAP_DUAL_SYNC = "dual_sync"
@@ -83,6 +85,7 @@ CAP_DUAL_TOOL_CALIBRATION = "dual_tool_calibration"
 # Actions that additionally require an approved MANUAL grant.  Requesting the
 # grant itself must stay available, or the operator can never get one.
 MANUAL_GRANT_REQUIRED = frozenset({
+    CAP_TOOL_JOG, CAP_INDIVIDUAL_TARGETS,
     CAP_TELEOP_JOG,
     CAP_TELEOP_POSE,
     CAP_GRIPPER_COMMAND,

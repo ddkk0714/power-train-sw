@@ -19,6 +19,27 @@ def normalize_tool(value):
             or len(set(ids)) != len(ids)):
         raise ValueError('invalid tool IDs')
     out = {'tool_type': value['tool_type'], 'actuator_ids': ids, 'actuators': []}
+    speed = value.get('local_jog_speed_level')
+    if speed is not None:
+        if type(speed) is not int or not 0 <= speed <= 10:
+            raise ValueError('invalid local jog speed')
+        out['local_jog_speed_level'] = speed
+    generation = value.get('tool_context_generation')
+    if generation is not None:
+        if type(generation) is not int or generation < 0:
+            raise ValueError('invalid tool generation')
+        out['tool_context_generation'] = generation
+    capabilities = value.get('manual_tool_capabilities', [])
+    if (not isinstance(capabilities, list)
+            or any(c not in ('tool_jog', 'dual_sync', 'individual_targets') for c in capabilities)):
+        raise ValueError('invalid manual tool capabilities')
+    out['manual_tool_capabilities'] = capabilities
+    synchronization = value.get('synchronization')
+    if synchronization is not None:
+        if (not isinstance(synchronization, dict) or synchronization.get('state') not in (
+                'SYNCHRONIZED', 'FAULT', 'UNKNOWN', 'NOT_APPLICABLE')):
+            raise ValueError('invalid synchronization state')
+        out['synchronization'] = {'state': synchronization['state']}
     for key in ('actuators_discovered', 'tool_detached', 'physical_tool_detached',
                 'mock_mode', 'motion_allowed', 'tool_enable_allowed', 'read_only',
                 'emergency_stop', 'calibration_jog_enabled', 'manual_coupling_lock'):
@@ -181,6 +202,51 @@ def validate_local_pose_request(action, params):
     for flag in ('limits', 'trip'):
         if flag in params and type(params[flag]) is not bool:
             raise ValueError(f'invalid {flag} flag')
+
+
+def tool_manual_request(action, params, sent_at_s):
+    """Translate authenticated GUI intent without accepting raw actuator IDs."""
+    types = {'spur_1motor_gripper': ('5', ('single',)),
+             'dual_motor_gripper': ('3,4', ('left', 'right', 'both')),
+             'cleaner': ('2', ('single',))}
+    identity = params.get('tool_id')
+    if not isinstance(identity, str) or ':' not in identity:
+        raise ValueError('missing active tool identity')
+    kind, ids = identity.split(':', 1)
+    if kind not in types or ids != types[kind][0] or params.get('target') not in types[kind][1]:
+        raise ValueError('invalid active tool target')
+    generation = params.get('tool_generation')
+    if type(generation) is not int or generation < 0:
+        raise ValueError('invalid tool generation')
+    payload = dict(tool_type=kind, target=params['target'],
+                   tool_context_generation=generation, sent_at_s=sent_at_s)
+    if action == 'robot_arm_tool_command':
+        allowed = {'target', 'command', 'tool_id', 'tool_generation'}
+        command = params.get('command')
+        if command not in (('left', 'right', 'stop') if kind == 'cleaner' else ('open', 'close', 'stop')):
+            raise ValueError('invalid tool command')
+        payload['command'] = command.upper()
+    elif action in ('robot_arm_tool_jog', 'robot_arm_tool_jog_stop'):
+        allowed = {'target', 'tool_id', 'tool_generation', 'sequence'}
+        sequence = params.get('sequence')
+        if type(sequence) is not int or sequence < 0:
+            raise ValueError('invalid tool sequence')
+        payload['sequence'] = sequence
+        if action.endswith('_stop'):
+            allowed.add('reason')
+            payload['command'] = 'HOLD'
+        else:
+            allowed.update(('direction', 'ttl_s', 'expires_at_s', 'speed_level'))
+            direction, ttl = params.get('direction'), params.get('ttl_s')
+            if (type(direction) is not int or direction not in (-1, 1)
+                    or type(ttl) not in (int, float) or not math.isfinite(ttl) or not 0 < ttl <= 0.6):
+                raise ValueError('invalid tool lease')
+            payload.update(command='JOG', direction=direction, ttl_s=ttl)
+    else:
+        raise ValueError('unsupported tool action')
+    if params.keys() - allowed:
+        raise ValueError('unexpected tool parameters')
+    return payload
 
 
 def validate_local_wrist_request(action, params):

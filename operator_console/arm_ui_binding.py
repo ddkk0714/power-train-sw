@@ -52,6 +52,8 @@ class ArmUiTelemetryBinding:
             tool_key = (kind, ids)
             if tool_key != self._tool_key:
                 self._tool_generation += 1
+            if type(tool.get('tool_context_generation')) is int:
+                self._tool_generation = tool['tool_context_generation']
             # The arm status has no hardware serial number.  This is therefore
             # an observed active-profile fingerprint, not an invented serial.
             profile_id = f"{tool['tool_type']}:{','.join(map(str, ids))}"
@@ -61,7 +63,7 @@ class ArmUiTelemetryBinding:
                 display_name=C.TOOL_KIND_KOREAN[kind],
                 actuator_ids=ids,
                 attached=(False if tool.get("tool_detached") or tool.get("physical_tool_detached")
-                          else None),
+                          else True if tool.get('actuators_discovered') is True else None),
                 generation=self._tool_generation,
             )
             readings = tuple(
@@ -85,6 +87,8 @@ class ArmUiTelemetryBinding:
             )
             diagnostics = C.ToolDiagnostics(
                 motors=readings, generation=self._tool_generation,
+                sync_state={'SYNCHRONIZED': C.SYNC_SYNCED, 'FAULT': C.SYNC_FAULT}.get(
+                    (tool.get('synchronization') or {}).get('state'), C.SYNC_UNKNOWN),
             )
         self._tool_key = tool_key
 
@@ -128,6 +132,9 @@ class ArmUiTelemetryBinding:
                 and tool.get("read_only") is not True
                 and tool.get("emergency_stop") is not True):
             capabilities.add(C.CAP_GRIPPER_COMMAND)
+            capabilities.update(tool.get('manual_tool_capabilities', []))
+            if 'dual_sync' in tool.get('manual_tool_capabilities', []):
+                capabilities.add(C.CAP_DUAL_SYNC)
         if (link_state == C.LINK_LIVE and ops_link_ready and tool is not None
                 and isinstance(tool.get("dual_calibration"), dict)
                 and tool.get("read_only") is not True):
@@ -182,12 +189,14 @@ class ArmUiTelemetryBinding:
             link=C.SourceLink(state=link_state, age_s=receive_age),
             detected_tool=identity,
             arm_fsm=runtime_state("fsm_state"),
+            tool_fsm=C.FsmState(raw=tool.get('fsm_state') or '') if tool else C.FsmState(),
             arm_status=runtime_state("arm_status"),
             authority=C.ControlAuthority(
                 granted_mode="MANUAL" if granted else "",
                 status=C.AUTHORITY_GRANTED if granted else C.AUTHORITY_UNKNOWN,
             ),
             teleop=C.TeleopState(axes=axes, selected_axis=5 if local_wrist else None,
+                                 speed_level=(tool.get('local_jog_speed_level') if tool else None),
                                  poses=tuple(pose_list or ())),
             diagnostics=diagnostics,
             capabilities=frozenset(capabilities),

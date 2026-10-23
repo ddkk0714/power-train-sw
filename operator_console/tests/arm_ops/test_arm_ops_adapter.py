@@ -122,10 +122,9 @@ def test_only_the_deliberately_unbound_callbacks_are_none():
 
 
 def test_the_unbound_callbacks_are_the_ones_with_no_agreed_arm_meaning():
-    # select_axis is a view change; change_speed has no confirmed arm-side
-    # representation, and guessing one would put an unagreed command on the wire.
+    # Speed is carried by the next bounded bench jog, not a separate motor command.
     assert set(UNBOUND_CALLBACKS) == {
-        "select_axis", "change_speed",
+        "select_axis",
     }
 
 

@@ -72,6 +72,7 @@ class ArmCommandSession:
         self._audit_sink = audit_sink
         self._audits: list[P.PolicyAudit] = []
         self._submitted: list[K.ArmOpsRequest] = []
+        self.speed_level = 5
 
     # --- state ------------------------------------------------------------
     @property
@@ -354,8 +355,13 @@ class ArmCommandSession:
         self, axis: int, direction: int, *, speed_level: int | None = None,
     ) -> CommandOutcome:
         return self._press(
-            J.arm_axis_channel(axis), direction, speed_level=speed_level,
+            J.arm_axis_channel(axis), direction,
+            speed_level=self.speed_level if speed_level is None else speed_level,
         )
+
+    def change_speed(self, delta):
+        self.speed_level = max(0, min(10, self.speed_level + int(delta)))
+        return CommandOutcome(accepted=True, action=K.ACTION_JOG)
 
     def release_axis_jog(self, axis: int) -> CommandOutcome:
         return self._release(J.arm_axis_channel(axis))
@@ -365,6 +371,11 @@ class ArmCommandSession:
 
     def release_tool_jog(self, target: str) -> CommandOutcome:
         return self._release(self._tool_channel(target))
+
+    def soft_stop_tool(self, target: str) -> CommandOutcome:
+        self._registry.release(self._tool_channel(target), now=float(self._clock()),
+                               reason=K.STOP_REASON_EXPLICIT, force=True)
+        return CommandOutcome(accepted=True, action=K.ACTION_TOOL_JOG_STOP)
 
     def press_calibration_jog(self, target: str, direction: int) -> CommandOutcome:
         return self._press(self._calibration_channel(target), direction)
