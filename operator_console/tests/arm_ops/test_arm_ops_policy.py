@@ -297,10 +297,18 @@ def test_a_matching_tool_identity_is_allowed():
 def test_a_backend_block_reason_is_surfaced_verbatim():
     context = granted_context(blocked_reasons=("비상정지 상태입니다.",))
 
-    decision = P.authorize(context, K.ACTION_HOME)
+    decision = P.authorize(context, K.ACTION_TOOL_COMMAND,
+                           tool_params(context))
 
     assert not decision
     assert decision.korean == "비상정지 상태입니다."
+
+
+def test_a_tool_block_does_not_prevent_arm_jog_or_pose():
+    context = granted_context(blocked_reasons=("도구가 분리됨으로 판정됨",))
+
+    assert P.authorize(context, K.ACTION_HOME)
+    assert P.authorize(context, K.ACTION_JOG)
 
 
 def test_a_backend_block_does_not_prevent_stopping():

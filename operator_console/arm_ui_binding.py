@@ -176,7 +176,7 @@ class ArmUiTelemetryBinding:
         if (local_wrist and link_state == C.LINK_LIVE and ops_link_ready
                 and tool.get('read_only') is False
                 and tool.get('emergency_stop') is False
-                and any(axis.index == 5 for axis in axes)
+                and axes
                 and (os.environ.get('ARM_LOCAL_WRIST_IGNORE_LOCK') == '1'
                      or (lock.get('state') == 'LOCKED' and lock.get('torque') == 1))):
             capabilities.add(C.CAP_TELEOP_JOG)

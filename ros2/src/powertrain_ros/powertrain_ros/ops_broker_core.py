@@ -333,7 +333,7 @@ class OpsBrokerCore:
             )
             return self._cache_direct_response(key, fingerprint, response)
         deadline_s = None
-        if request['action'] == 'robot_arm_tool_jog':
+        if request['action'] in ('robot_arm_tool_jog', 'robot_arm_jog'):
             expiry = request['params'].get('expires_at_s')
             if type(expiry) not in (int, float) or not math.isfinite(expiry):
                 return self._cache_direct_response(key, fingerprint,

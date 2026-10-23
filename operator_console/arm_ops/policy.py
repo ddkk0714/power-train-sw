@@ -193,10 +193,12 @@ def authorize(
     # Tool change is also the bridge's existing re-scan/re-initialization
     # operation.  Let it observe a disconnected/faulted tool so it can report
     # fresh hardware state; it never enables torque or commands motion.
+    # Blocked reasons describe the tool only; arm jog/pose must still work
+    # with the tool detached or not ready.
     if context.blocked_reasons and action not in {
             K.ACTION_TOOL_CHANGE, K.ACTION_MODE_REQUEST, K.ACTION_MODE_RELEASE,
             K.ACTION_LOCK_COMMAND,
-    }:
+    } and capability not in {CAP_TELEOP_JOG, CAP_TELEOP_POSE}:
         return _refuse("backend_blocked", context.blocked_reasons[0])
 
     return ALLOWED

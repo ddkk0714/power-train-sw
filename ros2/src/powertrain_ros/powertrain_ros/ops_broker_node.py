@@ -562,15 +562,22 @@ class OpsBrokerNode(Node):
                 axes = (1, 2, 3, 4, 5) if os.environ.get('ARM_LOCAL_ALL_AXES') == '1' else (5,)
                 if type(order.params.get('axis')) is not int or order.params['axis'] not in axes:
                     raise ValueError(f'local bench supports only axes {axes}')
+                params = dict(order.params)
                 if action == 'robot_arm_jog':
-                    remaining = order.params['expires_at_s'] - time.monotonic()
+                    # The console may run on another host: use the deadline the
+                    # core converted to this host's monotonic clock.
+                    deadline = getattr(order, 'deadline_s', None)
+                    if deadline is None:
+                        raise ValueError('local wrist jog requires authenticated clock synchronization')
+                    remaining = deadline - time.monotonic()
                     if not 0 < remaining <= 1.0:
                         raise ValueError('expired or foreign-clock local wrist jog')
+                    params['expires_at_s'] = deadline
             except (ValueError, TypeError, KeyError) as exc:
                 self._complete_order(order, connection, role, False, str(exc))
                 return
             self._local_wrist_pub.publish(String(data=json.dumps(dict(
-                order.params, command='JOG' if action == 'robot_arm_jog' else 'STOP'))))
+                params, command='JOG' if action == 'robot_arm_jog' else 'STOP'))))
             self._complete_order(order, connection, role, True,
                                  'published local wrist request; verify joint feedback')
             return

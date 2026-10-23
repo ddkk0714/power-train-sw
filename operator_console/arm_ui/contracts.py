@@ -501,8 +501,10 @@ def gate(
     # asking the bridge to re-scan it.  Those are the recovery paths which can
     # make the tool ready again; only motion/torque controls need the ready
     # condition below.
+    # Tool readiness never gates the arm joints: they move without a tool.
     if (state.block_reasons and capability not in {
             CAP_CONTROL_MODE, CAP_TOOL_CHANGE, CAP_BRIDGE_RESTART, CAP_COUPLING_LOCK,
+            CAP_TELEOP_JOG, CAP_TELEOP_POSE,
     }):
         return False, state.block_reasons[0].korean
     return True, ""
