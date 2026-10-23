@@ -106,6 +106,19 @@ def focus_is_text_entry(toplevel: Gtk.Window | None) -> bool:
     )
 
 
+EXCHANGE_TOOL_LABELS = {
+    "spur_1motor_gripper": "단일 그리퍼",
+    "dual_motor_gripper": "듀얼 그리퍼",
+    "cleaner": "클리너",
+}
+EXCHANGE_STATE_LABELS = {
+    "IDLE": "대기", "MOVE_ABOVE": "슬롯 위로 이동", "DESCEND": "수직 하강",
+    "LOCK": "체결", "UNLOCK": "분리", "ASCEND": "수직 상승",
+    "VERIFY_RELEASED": "분리 확인", "VERIFY_ATTACHED": "장착 확인",
+    "HOME": "기본 자세 복귀", "DONE": "완료", "ABORTED": "중단",
+}
+
+
 class KeyboardTeleopPanel:
     """The keyboard-teleop card plus its optional window-level key handling."""
 
@@ -202,6 +215,7 @@ class KeyboardTeleopPanel:
         self.box.pack_start(card.box, False, False, 0)
 
         self.box.pack_start(self._build_pose_card(), False, False, 0)
+        self.box.pack_start(self._build_exchange_card(), False, False, 0)
 
     def _bench_switches(self, set_flag: Callable[[str, bool], None]) -> Gtk.Widget:
         """Bench-only joint-limit / current-trip switches (both start ON)."""
@@ -292,6 +306,77 @@ class KeyboardTeleopPanel:
             self.tracker.connect(widget, "clicked", lambda _b: action())
         self.gate.add(widget, callback, capability, extra=extra)
         return widget
+
+    def _build_exchange_card(self) -> Gtk.Widget:
+        card = Card(
+            "도구 교체 (슬롯)",
+            "슬롯마다 머리를 바닥으로 향한 ① 체결 자세와 ② 그 5cm 위 자세를 저장합니다. "
+            "교체는 달린 도구를 자기 슬롯에 반납하고 요청 도구를 가져온 뒤 home 자세로 "
+            "돌아갑니다. 두 자세 사이를 모든 축이 함께 움직여 머리 방향을 유지합니다. "
+            "위의 관절 제한·전류 트립 토글이 슬롯 저장과 교체에도 적용됩니다.",
+            accent="teleop",
+            with_badge=False,
+        )
+        self._exchange_tool = Gtk.ComboBoxText()
+        for kind, text in EXCHANGE_TOOL_LABELS.items():
+            self._exchange_tool.append(kind, text)
+        self._exchange_tool.set_active(0)
+        self._exchange_slot = Gtk.ComboBoxText()
+        for slot in ("1", "2", "3"):
+            self._exchange_slot.append(slot, f"슬롯 {slot}")
+        self._exchange_slot.set_active(0)
+        def capture_button(text, pose):
+            return self._simple(
+                text, self._callbacks.capture_tool_slot, C.CAP_TELEOP_POSE,
+                lambda: self._callbacks.capture_tool_slot(
+                    self._exchange_slot.get_active_id(),
+                    self._exchange_tool.get_active_id(), pose),
+            )
+
+        capture_seat = capture_button("① 체결 자세 저장", "seat")
+        capture_above = capture_button("② 5cm 위 자세 저장", "above")
+        start = self._simple(
+            "이 도구로 교체 시작", self._callbacks.start_tool_exchange,
+            C.CAP_TELEOP_POSE,
+            lambda: self._callbacks.start_tool_exchange(
+                self._exchange_tool.get_active_id(), self._exchange_dry_run.get_active()),
+            "arm-danger",
+        )
+        self._exchange_dry_run = Gtk.CheckButton(
+            label="도구 없이 동작만 시험 (체결·분리·도구 확인 생략)")
+        # Stopping must stay reachable whatever the gates say.
+        stop = button("교체 정지", "arm-danger")
+        if self._callbacks.stop_tool_exchange is not None:
+            self.tracker.connect(stop, "clicked",
+                                 lambda _b: self._callbacks.stop_tool_exchange())
+        card.pack(reflow_row([self._exchange_tool, self._exchange_slot], columns=2))
+        card.pack(reflow_row([capture_seat, capture_above], columns=2))
+        card.pack(self._exchange_dry_run)
+        card.pack(reflow_row([start, stop], columns=2))
+        self._exchange_status = label("교체 상태 미수신", "arm-note", wrap=True)
+        card.pack(self._exchange_status)
+        return card.box
+
+    def _refresh_exchange(self, state: C.ArmUiState) -> None:
+        status = state.tool_exchange
+        if not status:
+            self._exchange_status.set_text("교체 상태 미수신")
+            return
+        slots = status.get("slots") or {}
+        parts = [
+            EXCHANGE_STATE_LABELS.get(status.get("state"), str(status.get("state"))),
+            f"단계 {status.get('step', 0)}/{status.get('steps', 0)}",
+            f"슬롯 {status.get('slot') or '-'}",
+            "장착 " + EXCHANGE_TOOL_LABELS.get(status.get("attached_tool"), "없음"),
+            "슬롯표 " + (", ".join(
+                f"{k}:{EXCHANGE_TOOL_LABELS.get(v, v)}"
+                + ("(5cm 위 미저장)" if k in (status.get("incomplete") or []) else "")
+                for k, v in sorted(slots.items())) or "비어 있음"),
+        ]
+        text = " · ".join(parts)
+        if status.get("error"):
+            text += f"\n오류: {status['error']}"
+        self._exchange_status.set_text(text)
 
     def _build_pose_card(self) -> Gtk.Widget:
         card = Card(
@@ -515,6 +600,7 @@ class KeyboardTeleopPanel:
             self.release_all()
 
         self.gate.apply(state)
+        self._refresh_exchange(state)
         if (self._active and self._key_jog_axis is not None
                 and C.gate(state, self._callbacks.jog_start, C.CAP_TELEOP_JOG)[0]):
             self._callbacks.jog_start(self._key_jog_axis, self._key_jog_direction)

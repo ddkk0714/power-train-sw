@@ -27,3 +27,8 @@
     toolchanger_state_tolerance_ticks: 20
     local_pose_joint_speeds_deg_s: [10.0, 30.0, 15.0, 15.0]
     local_pose_joint_delays_s: [0.0, 0.0, 0.0, 1.0]
+    # Slot-based end-effector exchange (spec §2.8). Slots are taught from the GUI.
+    local_tool_slots_file: /session/tool_slots.json
+    local_tool_change_rise_m: 0.05
+    local_tool_change_step_m: 0.005
+    local_tool_change_speed_mps: 0.01

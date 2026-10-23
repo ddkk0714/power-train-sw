@@ -42,6 +42,7 @@ from dynamixel_control.tool_manual_control import ToolManualControl
 from dynamixel_control.toolchanger_lock import ToolchangerLock, LockError
 from dynamixel_control.toolchanger_sequence import ToolchangerSequence
 from dynamixel_control.tool_change_bridge import ToolChangeBridge
+from dynamixel_control.local_tool_change_bridge import LocalToolChangeBridge
 
 ADDR_TORQUE_ENABLE = 64
 ADDR_OPERATING_MODE = 11
@@ -366,7 +367,7 @@ class _LockMotorIO:
             b._write_register(1, address, size, value, 'lock ' + field)
 
 
-class MoveItDynamixelBridge(ToolChangeBridge, Node):
+class MoveItDynamixelBridge(ToolChangeBridge, LocalToolChangeBridge, Node):
     def __init__(self):
         super().__init__("moveit_dynamixel_bridge")
 
@@ -1079,6 +1080,7 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
                                      callback_group=self._command_group)
             self.create_timer(0.1, self._local_pose_watch,
                               callback_group=self._command_group)
+            self._init_local_tool_change()
         self.joint_state_pub = self.create_publisher(
             JointState,
             "/joint_states",
@@ -3108,6 +3110,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
         if (not self.manual_coupling_lock or self.control_scope != 'FULL_ROBOT'
                 or self.read_only or self.mock_mode):
             return
+        if self._tc_running():
+            self.get_logger().warn('local wrist jog rejected: tool change is running')
+            return
         with self._bus_lock:
             try:
                 request = json.loads(msg.data)
@@ -3227,6 +3232,9 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             self._write_register(dxl_id, 112, 4, int(self.arm_profile_velocity), 'jog profile')
 
     def _local_pose_command(self, msg):
+        if self._tc_running():
+            self.get_logger().warn('local pose rejected: tool change is running')
+            return
         with self._bus_lock:
             pose_started = False
             try:
@@ -3847,6 +3855,8 @@ class MoveItDynamixelBridge(ToolChangeBridge, Node):
             'poses': (sorted(self._local_poses)
                       if self.local_jog_all_axes and self.local_poses_file else None),
             'local_jog_speed_level': getattr(self, '_local_speed_level', 5),
+            'local_tool_change': (self._tc_snapshot()
+                                  if getattr(self, '_tool_change', None) else None),
             'read_only': self.read_only, 'mock_mode': self.mock_mode,
             'bridge_connected': True,
             'u2d2_connected': self.port_connected,

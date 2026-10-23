@@ -357,6 +357,8 @@ class ArmUiState:
     diagnostics: ToolDiagnostics = field(default_factory=ToolDiagnostics)
     calibration: CalibrationState = field(default_factory=CalibrationState)
     coupling_lock: dict = field(default_factory=dict)
+    # Bridge-reported bench slot exchange status (state/step/slot/slots/error).
+    tool_exchange: dict = field(default_factory=dict)
     capabilities: frozenset[str] = frozenset()
     # True only for the preview fixtures.  Panels render a visible banner so a
     # screenshot of fake data can never be mistaken for a live arm.
@@ -403,6 +405,9 @@ class ArmUiCallbacks:
     delete_pose: Callback = None                  # (name: str)
     freedrive: Callback = None                    # () bench-only
     freedrive_release: Callback = None            # () bench-only
+    capture_tool_slot: Callback = None            # (slot, tool_type, pose: seat|above) bench-only
+    start_tool_exchange: Callback = None          # (tool_type: str, dry_run: bool) bench-only
+    stop_tool_exchange: Callback = None           # () bench-only
     # 도구 조작
     restart_bridge: Callback = None               # () bridge supervisor restart
     set_tool_enabled: Callback = None             # (enabled: bool) active tool only

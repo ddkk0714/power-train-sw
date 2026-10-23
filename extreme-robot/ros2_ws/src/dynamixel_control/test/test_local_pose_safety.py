@@ -54,6 +54,7 @@ def bridge():
         local_wrist_lock_gate=True, _lock_ready=lambda: False,
         _local_poses={'home': {j: 0.1 for j in joints if j != 'arm_joint_5'}},
         writes=[], warnings=[], clock=clock, registers={},
+        _tc_running=lambda: False,
     )
     for j, c in joints.items():
         b.registers[c['id']] = {44: 100, 70: 0, 126: 0, 128: 0,

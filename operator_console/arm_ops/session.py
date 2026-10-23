@@ -268,6 +268,22 @@ class ArmCommandSession:
         return self._issue(
             K.ACTION_POSE_MOVE, {"name": str(name), **K.BENCH_JOG_FLAGS}, intent="자세 이동")
 
+    def capture_tool_slot(self, slot: str, tool_type: str, pose: str = "seat") -> CommandOutcome:
+        params = {"slot": str(slot), "tool_type": str(tool_type), "pose": str(pose)}
+        if "limits" in K.BENCH_JOG_FLAGS:
+            params["limits"] = K.BENCH_JOG_FLAGS["limits"]
+        return self._issue(K.ACTION_SLOT_CAPTURE, params, intent="슬롯 저장")
+
+    def start_tool_exchange(self, tool_type: str, dry_run: bool = False) -> CommandOutcome:
+        params = {"tool_type": str(tool_type), **K.BENCH_JOG_FLAGS}
+        if dry_run:
+            params["dry_run"] = True
+        return self._issue(K.ACTION_EXCHANGE_START, params,
+                           intent="도구 교체 동작 시험" if dry_run else "도구 교체")
+
+    def stop_tool_exchange(self) -> CommandOutcome:
+        return self._issue(K.ACTION_EXCHANGE_STOP, intent="도구 교체 정지")
+
     def freedrive(self) -> CommandOutcome:
         return self._issue(K.ACTION_FREEDRIVE, intent="자세 자유 지정")
 

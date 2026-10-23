@@ -186,6 +186,7 @@ class ArmUiTelemetryBinding:
             capabilities.add(C.CAP_TELEOP_POSE)
         return C.ArmUiState(
             coupling_lock=lock,
+            tool_exchange=dict((tool or {}).get('local_tool_change') or {}),
             link=C.SourceLink(state=link_state, age_s=receive_age),
             detected_tool=identity,
             arm_fsm=runtime_state("fsm_state"),

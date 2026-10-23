@@ -272,7 +272,7 @@ def test_the_pure_core_imports_without_gtk():
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "22"
+    assert result.stdout.strip() == "25"
 
 
 def test_the_adapter_is_still_reachable_from_the_package_root():

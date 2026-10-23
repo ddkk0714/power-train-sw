@@ -75,6 +75,13 @@ ACTION_TOOL_JOG_STOP = "robot_arm_tool_jog_stop"
 ACTION_CALIBRATION = "robot_arm_calibration"
 ACTION_CALIBRATION_JOG = "robot_arm_calibration_jog"
 ACTION_CALIBRATION_JOG_STOP = "robot_arm_calibration_jog_stop"
+# Bench end-effector exchange via taught slots (local arm bench only).
+ACTION_EXCHANGE_START = "robot_arm_exchange_start"
+ACTION_EXCHANGE_STOP = "robot_arm_exchange_stop"
+ACTION_SLOT_CAPTURE = "robot_arm_slot_capture"
+EXCHANGE_TOOL_TYPES = ("spur_1motor_gripper", "dual_motor_gripper", "cleaner")
+EXCHANGE_SLOTS = ("1", "2", "3")
+EXCHANGE_POSES = ("seat", "above")   # seated/locked pose, pose 5 cm above it
 
 
 # Actions that command motion and therefore require an approved MANUAL grant.
@@ -91,6 +98,8 @@ MOTION_ACTIONS = frozenset({
     ACTION_TOOL_JOG_STOP,
     ACTION_CALIBRATION_JOG,
     ACTION_CALIBRATION_JOG_STOP,
+    ACTION_EXCHANGE_START,
+    ACTION_SLOT_CAPTURE,
 })
 
 # Actions that end motion.  These are the one category that must stay reachable
@@ -101,6 +110,7 @@ STOP_ACTIONS = frozenset({
     ACTION_JOG_STOP,
     ACTION_TOOL_JOG_STOP,
     ACTION_CALIBRATION_JOG_STOP,
+    ACTION_EXCHANGE_STOP,
 })
 
 # Actions scoped to whichever tool is currently attached.  Each carries the
@@ -335,6 +345,16 @@ ACTION_PARAMS: dict[str, tuple[ParamSpec, ...]] = {
         _spec("sequence", _is_generation),
         *_TOOL_IDENTITY,
     ),
+    ACTION_EXCHANGE_START: (_spec("tool_type", _in(EXCHANGE_TOOL_TYPES)),
+                            _spec("dry_run", _is_bool, required=False,
+                                  note="도구 없이 이동만 시험: 체결·분리·도구 확인 생략"),
+                            _spec("limits", _is_bool, required=False),
+                            _spec("trip", _is_bool, required=False)),
+    ACTION_EXCHANGE_STOP: (),
+    ACTION_SLOT_CAPTURE: (_spec("slot", _in(EXCHANGE_SLOTS)),
+                          _spec("tool_type", _in(EXCHANGE_TOOL_TYPES)),
+                          _spec("pose", _in(EXCHANGE_POSES)),
+                          _spec("limits", _is_bool, required=False)),
 }
 
 ARM_ACTIONS = frozenset(ACTION_PARAMS)
@@ -473,6 +493,9 @@ PLANNED_ACTIONS: tuple[PlannedAction, ...] = tuple(
         (ACTION_RESUME_HOLD, "복귀. 현재 자세 유지 의미를 보존해야 한다"),
         (ACTION_HOME, "home. 저장된 자세 의미를 보존해야 한다"),
         (ACTION_POSE_SAVE, "현재 자세 저장"),
+        (ACTION_SLOT_CAPTURE, "도구 슬롯 티칭: 머리가 바닥을 향한 체결 자세 또는 그 5cm 위 자세를 저장"),
+        (ACTION_EXCHANGE_START, "슬롯 기반 도구 교체 시작: 반납→수직 하강/상승→장착→home"),
+        (ACTION_EXCHANGE_STOP, "도구 교체 정지: 팔 유지·결합 잠금 정지"),
         (ACTION_POSE_MOVE, "저장 자세로 이동"),
         (ACTION_POSE_DELETE, "저장 자세 삭제"),
         (ACTION_FREEDRIVE, "자세 자유 지정: 1~4축 토크 해제(손으로 자세 잡기)"),

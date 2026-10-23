@@ -9,6 +9,36 @@ TOOL_LABELS = {
 }
 
 
+def _exchange_status(value):
+    """Bench slot exchange progress, bounded like every other forwarded field."""
+    out = {}
+    for key in ('state', 'slot', 'error'):
+        item = value.get(key)
+        if item is not None and not isinstance(item, str):
+            raise ValueError('invalid exchange status text')
+        out[key] = item[:160] if item is not None else None
+    for key in ('step', 'steps'):
+        item = value.get(key, 0)
+        if type(item) is not int or not 0 <= item <= 64:
+            raise ValueError('invalid exchange step')
+        out[key] = item
+    slots = value.get('slots') or {}
+    if (not isinstance(slots, dict) or len(slots) > 8
+            or any(not isinstance(k, str) or v not in TOOL_LABELS for k, v in slots.items())):
+        raise ValueError('invalid exchange slots')
+    out['slots'] = dict(slots)
+    incomplete = value.get('incomplete') or []
+    if (not isinstance(incomplete, list) or len(incomplete) > 8
+            or any(key not in slots for key in incomplete)):
+        raise ValueError('invalid incomplete slots')
+    out['incomplete'] = list(incomplete)
+    attached = value.get('attached_tool')
+    if attached is not None and attached not in TOOL_LABELS:
+        raise ValueError('invalid attached tool')
+    out['attached_tool'] = attached
+    return out
+
+
 def normalize_tool(value):
     if not isinstance(value, dict) or value.get('tool_type') not in TOOL_LABELS:
         raise ValueError('invalid tool type')
@@ -58,6 +88,9 @@ def normalize_tool(value):
                 or any(not isinstance(p, str) or not 1 <= len(p) <= 64 for p in poses)):
             raise ValueError('invalid pose list')
         out['poses'] = poses
+    exchange = value.get('local_tool_change')
+    if isinstance(exchange, dict):
+        out['local_tool_change'] = _exchange_status(exchange)
     dual_calibration = value.get('dual_calibration')
     if isinstance(dual_calibration, dict):
         out['dual_calibration'] = {
@@ -202,6 +235,33 @@ def validate_local_pose_request(action, params):
     for flag in ('limits', 'trip'):
         if flag in params and type(params[flag]) is not bool:
             raise ValueError(f'invalid {flag} flag')
+
+
+EXCHANGE_TOOL_TYPES = ('spur_1motor_gripper', 'dual_motor_gripper', 'cleaner')
+
+
+def local_tool_change_request(action, params):
+    """Bench slot teach/exchange actions -> the bridge's /arm/local_tool_change JSON."""
+    if os.environ.get('ARM_LOCAL_ALL_AXES') != '1':
+        raise ValueError('local tool change actions are bench-only')
+    flags = {'dry_run', 'limits', 'trip'}
+    allowed = {'robot_arm_slot_capture': {'slot', 'tool_type', 'pose', 'limits'},
+               'robot_arm_exchange_start': {'tool_type', 'dry_run', 'limits', 'trip'},
+               'robot_arm_exchange_stop': set()}[action]
+    if not allowed - flags <= set(params) <= allowed:
+        raise ValueError('invalid local tool change parameters')
+    for flag in flags & set(params):
+        if type(params[flag]) is not bool:
+            raise ValueError(f'invalid {flag} flag')
+    if 'tool_type' in params and params['tool_type'] not in EXCHANGE_TOOL_TYPES:
+        raise ValueError('unknown tool type')
+    if 'slot' in params and params['slot'] not in ('1', '2', '3'):
+        raise ValueError('unknown slot')
+    if 'pose' in params and params['pose'] not in ('seat', 'above'):
+        raise ValueError('unknown slot pose')
+    command = {'robot_arm_slot_capture': 'CAPTURE', 'robot_arm_exchange_start': 'START',
+               'robot_arm_exchange_stop': 'STOP'}[action]
+    return dict(params, command=command)
 
 
 def tool_manual_request(action, params, sent_at_s):

@@ -158,6 +158,7 @@ class OpsBrokerNode(Node):
         self._coupling_lock_pub = self.create_publisher(String, "/toolchanger/command", 10)
         self._local_wrist_pub = self.create_publisher(String, "/arm/local_wrist_jog", 10)
         self._local_pose_pub = self.create_publisher(String, "/arm/local_pose", 10)
+        self._local_tool_change_pub = self.create_publisher(String, "/arm/local_tool_change", 10)
         self._tool_manual_pub = self.create_publisher(String, "/tool/manual_command", 10)
         self._arm_mode_pub = self.create_publisher(String, "/control/mode", 10)
         self._tool_change_pub = self.create_publisher(String, "/tool/change", 10)
@@ -544,6 +545,17 @@ class OpsBrokerNode(Node):
             self._local_pose_pub.publish(String(data=json.dumps(dict(order.params, command=command))))
             self._complete_order(order, connection, role, True,
                                  'published local pose request; verify joint feedback')
+            return
+        if order.kind == 'publish_local_tool_change':
+            from powertrain_observability.tool_snapshot import local_tool_change_request
+            try:
+                payload = local_tool_change_request(order.action, dict(order.params))
+            except (ValueError, TypeError, KeyError) as exc:
+                self._complete_order(order, connection, role, False, str(exc))
+                return
+            self._local_tool_change_pub.publish(String(data=json.dumps(payload)))
+            self._complete_order(order, connection, role, True,
+                                 'published tool change request; verify exchange status')
             return
         if order.kind in ('publish_local_wrist_disable', 'publish_local_wrist_enable'):
             if order.params:
