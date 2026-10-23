@@ -216,6 +216,16 @@ class KeyboardTeleopPanel:
                        False, False, 0)
         return row
 
+    @property
+    def selected_axis(self) -> int | None:
+        return self._state.teleop.selected_axis
+
+    def select_axis(self, index: int) -> None:
+        """Select an axis exactly as clicking its toggle does (used by the pad)."""
+        toggle = self._axis_buttons.get(index)
+        if toggle is not None and not toggle.get_active():
+            toggle.set_active(True)
+
     # --- construction helpers ------------------------------------------
     def _wire_axis(self, toggle: Gtk.ToggleButton, index: int) -> None:
         select = self._callbacks.select_axis

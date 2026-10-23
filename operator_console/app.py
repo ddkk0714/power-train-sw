@@ -4291,10 +4291,11 @@ class OperatorConsole(Gtk.Window):
                 request_id=rid, action=action, status=status, detail=detail)))
         arm_callbacks = self._arm_ops_adapter.callbacks()
         self._arm_manual_tab = ArmManualTab(arm_callbacks)
-        self._arm_pad_control = ArmPadControl(self._arm_ops_adapter.session)
+        self._arm_pad_control = ArmPadControl(self._arm_ops_adapter.session,
+                                              axis_view=self._arm_manual_tab.keyboard)
         self._arm_pad_reader = None
-        self._arm_pad_toggle = Gtk.CheckButton(label='패드로 현재 도구 조작 (차체 주행과 분리)')
-        self._arm_pad_note = Gtk.Label(label='Xbox X/B/A/Y · DualSense □/○/×/△')
+        self._arm_pad_toggle = Gtk.CheckButton(label='패드로 팔·도구 조작 (차체 주행과 분리)')
+        self._arm_pad_note = Gtk.Label(label='LB/RB 축 선택 · 십자키 조그/속도 · X/B/A/Y 도구')
         self._arm_pad_note.set_xalign(0)
         self._arm_pad_note.set_line_wrap(True)
         self._arm_manual_tab._page.pack_start(self._arm_pad_toggle, False, False, 0)

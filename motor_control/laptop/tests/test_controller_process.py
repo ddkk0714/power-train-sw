@@ -111,6 +111,18 @@ def test_face_button_mappings_are_explicit_for_xbox_and_dualsense():
     assert controller.tool_button_mapping('unidentified pad') == {}
 
 
+def test_arm_buttons_use_bumpers_and_the_dpad_hat_only_for_known_pads():
+    assert controller.arm_button_mapping('Xbox Series X Controller') == {
+        'axis_prev': 4, 'axis_next': 5}
+    assert controller.arm_button_mapping('DualSense Wireless Controller') == {
+        'axis_prev': 4, 'axis_next': 5}
+    assert controller.arm_button_mapping('unidentified pad') == {}
+    assert controller.hat_actions((0, 1)) == ('jog_plus',)
+    assert controller.hat_actions((-1, -1)) == ('jog_minus', 'speed_down')
+    assert controller.hat_actions((1, 0)) == ('speed_up',)
+    assert controller.hat_actions((0, 0)) == ()
+
+
 def _neutral_sample(**changes):
     values = {
         "requested_mode": "DRIVE",

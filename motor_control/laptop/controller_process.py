@@ -63,6 +63,19 @@ def tool_button_mapping(name):
     return {}
 
 
+def arm_button_mapping(name):
+    """Bumpers select the arm axis; both supported pads number L1/R1 as 4/5."""
+    return {'axis_prev': 4, 'axis_next': 5} if tool_button_mapping(name) else {}
+
+
+def hat_actions(hat):
+    """D-pad up/down jog the selected arm axis, left/right change jog speed."""
+    x, y = hat
+    return tuple(action for action, active in (
+        ('jog_plus', y > 0), ('jog_minus', y < 0),
+        ('speed_down', x < 0), ('speed_up', x > 0)) if active)
+
+
 def is_neutral(sample, *, buttons_released=False):
     """Return true only for a fully released, normalized input sample."""
     if not isinstance(sample, ClientInput):
@@ -243,11 +256,16 @@ class PygamePadSource:
                 not self._joystick.get_button(index)
                 for index in range(button_count)
             )
-            tool_mapping = tool_button_mapping(getattr(self._joystick, 'get_name', lambda: '')())
+            name = getattr(self._joystick, 'get_name', lambda: '')()
+            tool_mapping = tool_button_mapping(name)
+            mapping = {**tool_mapping, **arm_button_mapping(name)}
+            hat = (self._joystick.get_hat(0)
+                   if tool_mapping and self._joystick.get_numhats() > 0 else (0, 0))
             return PadReading(
-                True, sample, "gamepad connected", buttons_released,
-                tuple(action for action, index in tool_mapping.items()
-                      if index < button_count and self._joystick.get_button(index)),
+                True, sample, "gamepad connected", buttons_released and hat == (0, 0),
+                tuple(action for action, index in mapping.items()
+                      if index < button_count and self._joystick.get_button(index))
+                + hat_actions(hat),
                 ('known' if tool_mapping else ''),
             )
         except Exception as exc:
